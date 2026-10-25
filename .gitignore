@@ -1,0 +1,10 @@
+# Secrets and state of a local bridge: never committed
+bridge/config.json
+bridge/bridge-state.json
+
+node_modules/
+dist/
+
+*.tmp
+.DS_Store
+Thumbs.db

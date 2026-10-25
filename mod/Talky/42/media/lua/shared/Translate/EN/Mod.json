@@ -1,0 +1,4 @@
+{
+    "name": "Talky - LibertyTalk Live Events",
+    "description": "Your stream events become game events. LibertyTalk sends follows, subs, bits, raids, channel points and Super Chats to the Talky bridge on your PC, and the mod runs the matching workflow in your game: a zombie named after the follower, a horde for a raid, the helicopter for 1000 bits. <LINE> <LINE> Solo or host only. Needs the Talky bridge (Node.js 18 or later) and a public tunnel: download and setup guide on GitHub. Press F8 in game to open the Talky window."
+}

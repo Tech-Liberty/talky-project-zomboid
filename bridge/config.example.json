@@ -1,0 +1,169 @@
+{
+  "port": 7420,
+  "host": "127.0.0.1",
+  "token": "change-me-to-a-long-random-string",
+  "zomboidLuaDir": "%USERPROFILE%/Zomboid/Lua",
+  "jobTtlSeconds": 900,
+  "httpAllowedHosts": ["*.liberty-talk.com"],
+
+  "settings": {
+    "language": "en",
+    "anonymousName": ""
+  },
+
+  "webhooks": {
+    "follow":   { "workflow": "new_follower" },
+    "sub":      { "workflow": "new_sub" },
+    "gift":     { "workflow": "gift_subs" },
+    "bits":     { "workflow": "bits" },
+    "raid":     { "workflow": "raid" },
+    "donation": { "workflow": "donation" },
+    "superchat":{ "workflow": "donation" },
+    "member":   { "workflow": "new_sub" },
+    "command":  { "workflow": "chat_zombie" },
+    "points": {
+      "routes": [
+        { "when": { "reward_title": { "contains": "helicopter" } }, "workflow": "points_helicopter" },
+        { "when": { "reward_title": { "contains": "heal" } },       "workflow": "points_heal" },
+        { "when": { "reward_title": { "contains": "storm" } },      "workflow": "points_storm" },
+        { "when": { "reward_title": { "contains": "zombie" } },     "workflow": "points_zombie" }
+      ]
+    }
+  },
+
+  "workflows": {
+    "new_follower": {
+      "steps": [
+        { "action": "notify", "text": "{{user}} joins the horde!", "color": "#b388ff" },
+        { "action": "wait", "seconds": 2 },
+        { "action": "spawn_zombie", "name": "{{user}}", "distance": 14, "color": "#b388ff" }
+      ]
+    },
+
+    "new_sub": {
+      "steps": [
+        { "set": { "tierLevel": "{{tier | default:1000 | tier}}" } },
+        { "action": "notify", "text": "{{user}} subscribed (tier {{tierLevel}})!", "color": "#ffd54f" },
+        { "action": "spawn_zombie", "name": "{{user}}", "count": "{{tierLevel}}", "sameName": true,
+          "health": "{{tierLevel | mul:1.5}}", "distance": 16, "color": "#ffd54f" },
+        { "if": { "tierLevel": { "gte": 3 } },
+          "then": [ { "action": "give_item", "item": "Base.Katana" } ],
+          "else": [ { "action": "give_item", "item": "Base.Bandage", "count": 2 } ] }
+      ]
+    },
+
+    "gift_subs": {
+      "steps": [
+        { "action": "notify", "text": "{{user}} gifts {{total | default:1}} subs: the army is coming!", "color": "#ff8a65" },
+        { "action": "noise", "radius": 40 },
+        { "action": "horde", "name": "{{user}}'s army", "count": "{{total | default:1 | mul:3 | clamp:3:45}}", "distance": 30 }
+      ]
+    },
+
+    "bits": {
+      "steps": [
+        { "if": { "bits": { "gte": 1000 } },
+          "then": [
+            { "action": "notify", "text": "{{bits}} bits from {{user}}: HELICOPTER!", "color": "#ff1744" },
+            { "action": "helicopter" }
+          ],
+          "else": [
+            { "if": { "bits": { "gte": 100 } },
+              "then": [
+                { "action": "notify", "text": "{{user}} sends {{bits | div:100 | floor}} zombie(s)!", "color": "#7c4dff" },
+                { "repeat": "{{bits | div:100 | floor}}", "max": 20, "steps": [
+                  { "action": "spawn_zombie", "name": "{{user}}", "sameName": true, "distance": 18 },
+                  { "action": "wait", "seconds": 1 }
+                ] }
+              ],
+              "else": [
+                { "action": "notify", "text": "{{user}} makes some noise...", "color": "#7c4dff" },
+                { "action": "noise", "radius": 25 }
+              ] }
+          ] }
+      ]
+    },
+
+    "raid": {
+      "steps": [
+        { "action": "notify", "text": "RAID from {{user}} with {{viewers}} viewers!", "color": "#ff1744", "seconds": 10 },
+        { "action": "weather", "type": "storm", "hours": 4 },
+        { "action": "thunder", "strike": false },
+        { "action": "wait", "seconds": 5 },
+        { "action": "horde", "name": "Raid {{user}}", "count": "{{viewers | default:5 | clamp:5:60}}", "distance": 35 }
+      ]
+    },
+
+    "donation": {
+      "steps": [
+        { "action": "notify", "text": "{{user}}: {{formatted_amount | default:amount}}, thank you!", "color": "#69f0ae" },
+        { "random": [
+            [ { "action": "give_item", "item": "Base.Shotgun" }, { "action": "give_item", "item": "Base.ShotgunShellsBox" } ],
+            [ { "action": "heal" }, { "action": "give_item", "item": "Base.CannedChili", "count": 3 } ],
+            [ { "action": "vehicle", "script": "Base.PickUpTruck" } ]
+          ],
+          "weights": [2, 2, 1] }
+      ]
+    },
+
+    "chat_zombie": {
+      "cooldownSeconds": 20,
+      "steps": [
+        { "action": "spawn_zombie", "name": "{{user}}", "distance": 20 }
+      ]
+    },
+
+    "points_helicopter": { "cooldownSeconds": 600, "steps": [ { "action": "notify", "text": "{{user}} calls the helicopter...", "color": "#ff5252" }, { "action": "helicopter" } ] },
+    "points_heal":       { "steps": [ { "action": "heal" }, { "action": "halo", "text": "Healed by {{user}}" } ] },
+    "points_storm":      { "steps": [ { "action": "weather", "type": "storm", "hours": 3 }, { "action": "notify", "text": "{{user}} summons the storm" } ] },
+    "points_zombie":     { "steps": [ { "action": "spawn_zombie", "name": "{{user}}", "distance": 15, "color": "#40c4ff" } ] },
+
+    "on_zombie_killed": {
+      "steps": [
+        { "chance": 0.3, "steps": [
+          { "action": "notify", "text": "{{name}}'s family wants revenge...", "color": "#ff5555" },
+          { "action": "spawn_zombie", "name": "{{name}}'s cousin", "count": 2, "distance": 20 }
+        ] },
+        { "action": "log", "message": "{{name}} killed (byPlayer={{byPlayer}})" }
+      ]
+    },
+
+    "on_player_died": {
+      "steps": [
+        { "action": "log", "message": "Died after {{hoursSurvived}}h, {{zombieKills}} kills" }
+      ]
+    },
+
+    "report_to_libertytalk": {
+      "enabled": false,
+      "steps": [
+        { "action": "http",
+          "url": "https://api.liberty-talk.com/webhooks/workflow/PASTE_THE_TOKEN_OF_YOUR_INCOMING_WEBHOOK",
+          "headers": { "X-Webhook-Secret": "PASTE_THE_SECRET_OF_YOUR_INCOMING_WEBHOOK" },
+          "body": { "event": "{{event}}", "name": "{{name}}", "hoursSurvived": "{{hoursSurvived}}", "zombieKills": "{{zombieKills}}" } }
+      ]
+    }
+  },
+
+  "gameEvents": {
+    "zombie_killed": "on_zombie_killed",
+    "player_died": "on_player_died"
+  },
+
+  "poll": {
+    "enabled": false,
+    "url": "https://<tenant>.api.liberty-talk.com/community/<community_id>/activity?per_page=50",
+    "apiToken": "<LibertyTalk API token>",
+    "intervalSeconds": 10,
+    "types": {
+      "follow": "new_follower",
+      "subscribe": "new_sub",
+      "subscribe_gift": "gift_subs",
+      "cheer": "bits",
+      "raid": "raid",
+      "donation": "donation",
+      "superchat": "donation",
+      "member": "new_sub"
+    }
+  }
+}

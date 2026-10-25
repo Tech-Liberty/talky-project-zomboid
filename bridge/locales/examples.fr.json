@@ -1,0 +1,24 @@
+{
+  "_about": "French texts of the example workflows, applied once when the bridge creates talky_config.json with settings.language = fr. Each entry replaces the text only if it still equals the English one.",
+
+  "webhooks.points.routes.0.when.reward_title.contains": { "en": "helicopter", "fr": "hélico" },
+  "webhooks.points.routes.1.when.reward_title.contains": { "en": "heal", "fr": "soin" },
+  "webhooks.points.routes.2.when.reward_title.contains": { "en": "storm", "fr": "tempête" },
+
+  "workflows.new_follower.steps.0.text": { "en": "{{user}} joins the horde!", "fr": "{{user}} rejoint la horde !" },
+  "workflows.new_sub.steps.1.text": { "en": "{{user}} subscribed (tier {{tierLevel}})!", "fr": "{{user}} s'abonne (tier {{tierLevel}}) !" },
+  "workflows.gift_subs.steps.0.text": { "en": "{{user}} gifts {{total | default:1}} subs: the army is coming!", "fr": "{{user}} offre {{total | default:1}} subs : l'armée arrive !" },
+  "workflows.gift_subs.steps.2.name": { "en": "{{user}}'s army", "fr": "Armée de {{user}}" },
+  "workflows.bits.steps.0.then.0.text": { "en": "{{bits}} bits from {{user}}: HELICOPTER!", "fr": "{{bits}} bits de {{user}} : HÉLICO !" },
+  "workflows.bits.steps.0.else.0.then.0.text": { "en": "{{user}} sends {{bits | div:100 | floor}} zombie(s)!", "fr": "{{user}} envoie {{bits | div:100 | floor}} zombie(s) !" },
+  "workflows.bits.steps.0.else.0.else.0.text": { "en": "{{user}} makes some noise...", "fr": "{{user}} fait du bruit..." },
+  "workflows.raid.steps.0.text": { "en": "RAID from {{user}} with {{viewers}} viewers!", "fr": "RAID de {{user}} avec {{viewers}} viewers !" },
+  "workflows.donation.steps.0.text": { "en": "{{user}}: {{formatted_amount | default:amount}}, thank you!", "fr": "{{user}} : {{formatted_amount | default:amount}}, merci !" },
+  "workflows.points_helicopter.steps.0.text": { "en": "{{user}} calls the helicopter...", "fr": "{{user}} appelle l'hélico..." },
+  "workflows.points_heal.steps.1.text": { "en": "Healed by {{user}}", "fr": "Soigné par {{user}}" },
+  "workflows.points_storm.steps.1.text": { "en": "{{user}} summons the storm", "fr": "{{user}} invoque la tempête" },
+  "workflows.on_zombie_killed.steps.0.steps.0.text": { "en": "{{name}}'s family wants revenge...", "fr": "La famille de {{name}} veut se venger..." },
+  "workflows.on_zombie_killed.steps.0.steps.1.name": { "en": "{{name}}'s cousin", "fr": "Cousin de {{name}}" },
+  "workflows.on_zombie_killed.steps.1.message": { "en": "{{name}} killed (byPlayer={{byPlayer}})", "fr": "{{name}} tué (byPlayer={{byPlayer}})" },
+  "workflows.on_player_died.steps.0.message": { "en": "Died after {{hoursSurvived}}h, {{zombieKills}} kills", "fr": "Mort après {{hoursSurvived}} h, {{zombieKills}} zombies tués" }
+}
