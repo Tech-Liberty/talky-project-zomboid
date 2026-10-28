@@ -2,7 +2,9 @@
 
 require "ISUI/ISCollapsableWindow"
 require "Talky/Talky_Text"
+require "Talky/Talky_Net"
 require "Talky/Talky_Settings"
+require "Talky/Talky_Bridge"
 require "Talky/Talky_Overlay"
 require "Talky/UI/Talky_Widgets"
 require "Talky/UI/Talky_Editors"
@@ -149,6 +151,98 @@ end
 
 ---------------------------------------------------------------- page: status
 
+local function fit(text, w)
+    return Talky_UI.truncate(text, w)
+end
+
+local reasonText = Talky_Bridge.reasonText
+
+-- Comma-separated names of the categories the server turned off ("" when none).
+-- Texts: UI_Talky_Cat_<category>.
+local function disabledCategories(caps)
+    local names = {}
+    for _, cat in ipairs(Talky_Config.categories) do
+        local key = "Cat_" .. cat
+        if caps.allow and caps.allow[cat] == false then names[#names + 1] = Talky_T(key) end
+    end
+    return table.concat(names, ", ")
+end
+
+-- Mode, answer of the server and its limits. Returns the next y.
+function Talky_Window:serverLines(page, y)
+    local info = Talky_Bridge.serverStatus()
+    local w = page.width
+    if info.mode ~= "client" then
+        -- single player: the "server" is this game; no answer means its server/ files did not load
+        -- (there is no server console: the errors are in console.txt)
+        if info.state == "no_answer" then
+            Talky_UI.label(page, 0, y, fit(Talky_T("Solo_NoAnswer"), w), C.bad)
+        else
+            Talky_UI.label(page, 0, y, fit(Talky_T("Mode_Solo"), w), C.muted)
+        end
+        return y + ROW
+    end
+    local state, col = info.state, C.muted
+    local text
+    if state == "allowed" then
+        text, col = Talky_T("Server_Allowed", info.serverVersion or "?"), C.ok
+    elseif state == "denied" then
+        text, col = Talky_T("Server_NotAllowed", info.username), C.bad
+    elseif state == "version" then
+        text, col = Talky_T("Server_Version", info.serverVersion or "?", Talky_Config.version), C.bad
+    elseif state == "no_answer" then
+        text, col = Talky_T("Server_NoAnswer"), C.bad
+    else
+        text = Talky_T("Server_Waiting")
+    end
+    text = Talky_T(info.host and "Mode_Host" or "Mode_Server") .. "  " .. text
+    local btnW = (state == "denied" and info.host) and 190 or 0
+    Talky_UI.label(page, 0, y, fit(text, w - btnW - 10), col)
+    if btnW > 0 then
+        Talky_UI.button(page, w - btnW, y, btnW, Talky_T("Btn_AllowMe"), self, function(win)
+            if Talky_Bridge.allowMe() then Talky_Overlay.toast(Talky_T("Toast_AllowMeSent"), "#8b5cf6", 4) end
+            win:showPage("status")
+        end, "primary")
+    end
+    y = y + ROW
+    if state == "denied" then
+        local help = info.host and Talky_T("Server_NotAllowedHost", info.username) or Talky_T("Server_NotAllowedHelp")
+        Talky_UI.label(page, 0, y, fit(help, w), C.muted)
+        y = y + ROW
+    elseif state == "allowed" and info.caps then
+        local c = info.caps
+        Talky_UI.label(page, 0, y, fit(Talky_T("Server_Caps", c.maxZombiesPerAction or "?", c.maxZombiesPerJob or "?",
+            c.maxSpawnDistance or "?", c.maxActiveJobs or "?"), w), C.muted)
+        y = y + ROW
+        local off = disabledCategories(c)
+        if off ~= "" then
+            Talky_UI.label(page, 0, y, fit(Talky_T("Server_Disabled", off), w), C.muted)
+            y = y + ROW
+        end
+    end
+    if info.noAnswer > 0 then
+        Talky_UI.label(page, 0, y, fit(Talky_T("Server_JobsNoAnswer", info.noAnswer), w), C.bad)
+        y = y + ROW
+    end
+    if info.lastReject then
+        Talky_UI.label(page, 0, y, fit(Talky_T("Server_LastReject", info.lastReject.seq, reasonText(info.lastReject.reason)), w), C.bad)
+        y = y + ROW
+    end
+    return y
+end
+
+-- "Copy command" buttons: the clipboard gets the bridge command that copies the full URL
+-- (node bridge\bridge.js url <id>), never a URL with its token.
+function Talky_Window:copyUrlCommand(id)
+    local cmd = Talky_Settings.urlCommand(id)
+    if not cmd then
+        Talky_Overlay.toast(Talky_T("Toast_HookIdUnsafe", tostring(id)), "#ff5555", 4)
+        return
+    end
+    Clipboard.setClipboard(cmd)
+    Talky_Overlay.toast(Talky_T("Toast_CommandCopied", id), "#8b5cf6", 4)
+end
+
 function Talky_Window:page_status(page)
     local d = self:data()
     local st, alive = Talky_Settings.readStatus()
@@ -161,7 +255,13 @@ function Talky_Window:page_status(page)
     else
         Talky_UI.label(page, 0, y, Talky_T("Status_Offline"), C.bad)
     end
-    y = y + ROW + 12
+    y = y + ROW
+    if Talky_Settings.bridgeTooOld() then
+        Talky_UI.label(page, 0, y, fit(Talky_T("Bridge_TooOld"), page.width), C.bad)
+        y = y + ROW
+    end
+    y = self:serverLines(page, y)
+    y = y + 12
 
     Talky_UI.label(page, 0, y, Talky_T("Status_PublicUrl"), C.muted)
     y = y + ROW
@@ -173,20 +273,20 @@ function Talky_Window:page_status(page)
 
     Talky_UI.label(page, 0, y, Talky_T("Status_HookUrls"), C.muted)
     y = y + ROW
-    local list = Talky_UI.list(page, 0, y, page.width - 160, ROW * 6)
+    local listRows = TalkyNet.mode() == "client" and 4 or 6
+    local list = Talky_UI.list(page, 0, y, page.width - 160, ROW * listRows)
     for _, id in ipairs(Talky_Settings.webhookIds()) do
         local hook = d.webhooks[id]
         local target = hook.routes and Talky_T("Status_Routes") or tostring(hook.workflow or "?")
-        list:addItem(Talky_Settings.baseUrl() .. "/hooks/" .. id .. "?token=*****   ->  " .. target, id)
+        list:addItem(Talky_Settings.hookUrl(id) .. "   ->  " .. target, id)
     end
-    Talky_UI.button(page, page.width - 150, y, 150, Talky_T("Btn_CopyUrl"), self, function()
+    Talky_UI.button(page, page.width - 150, y, 150, Talky_T("Btn_CopyCommand"), self, function(win)
         local item = list.items[list.selected]
-        if item then
-            Clipboard.setClipboard(Talky_Settings.hookUrl(item.item))
-            Talky_Overlay.toast(Talky_T("Toast_UrlCopied", item.item), "#8b5cf6", 3)
-        end
+        if item then win:copyUrlCommand(item.item) end
     end, "primary")
-    y = y + ROW * 6 + 12
+    y = y + ROW * listRows + 4
+    Talky_UI.label(page, 0, y, fit(Talky_T("Status_UrlCommandHelp"), page.width), C.muted)
+    y = y + ROW + 8
 
     Talky_UI.label(page, 0, y, Talky_T("Status_Recent"), C.muted)
     y = y + ROW
@@ -195,7 +295,12 @@ function Talky_Window:page_status(page)
         local when = string.sub(tostring(e.at or ""), 12, 19)
         local txt = when .. "  " .. tostring(e.source or "-") .. "  ->  " .. tostring(e.workflow or "-") .. "  (" .. tostring(e.user or "-") .. ")"
         if e.skipped then txt = txt .. "  " .. Talky_T("Status_Skipped", skipReason(e.skipped)) end
-        if e.error then txt = txt .. "  " .. Talky_T("Status_Error", tostring(e.error)) end
+        if e.rejected then
+            txt = txt .. "  " .. Talky_T("Status_Rejected", reasonText(e.rejected))
+        elseif e.error and not e.skipped then
+            -- "error" is the English text for windows older than 0.4.0; "skipped" is translated
+            txt = txt .. "  " .. Talky_T("Status_Error", tostring(e.error))
+        end
         log:addItem(txt, e)
     end
     if #log.items == 0 then log:addItem(Talky_T("Status_Nothing"), nil) end
@@ -290,18 +395,17 @@ function Talky_Window:page_webhooks(page)
         y = y + ROW * 2 + 16
     end
 
-    Talky_UI.label(page, x, y, Talky_T("Hooks_Token"), C.muted)
-    -- Masked like a password field: the window can be on stream.
-    local tokenEntry = Talky_UI.entry(page, x, y + ROW, w, hook.token or "", self, function(win, text)
-        if text == "" then hook.token = nil else hook.token = text end
-        win:markDirty()
-    end)
-    tokenEntry:setMasked(true)
-    y = y + ROW * 2 + 16
+    -- Read only: a dedicated token lives in bridge/config.json (the game cannot read it); the
+    -- bridge lists in talky_status.json which webhooks have one, never the token.
+    Talky_UI.label(page, x, y, Talky_T("Hooks_TokenTitle"), C.muted)
+    local dedicated = Talky_Settings.hasDedicatedToken(id)
+    local tokenKey = dedicated == true and "Hooks_TokenYes" or dedicated == false and "Hooks_TokenNo" or "Hooks_TokenUnknown"
+    Talky_UI.label(page, x, y + ROW, fit(Talky_T(tokenKey), w), dedicated == nil and C.muted or C.text)
+    Talky_UI.label(page, x, y + ROW * 2, fit(Talky_T("Hooks_TokenWhere"), w), C.muted)
+    y = y + ROW * 3 + 12
 
-    Talky_UI.button(page, x, y, 200, Talky_T("Btn_CopyFullUrl"), self, function()
-        Clipboard.setClipboard(Talky_Settings.hookUrl(id))
-        Talky_Overlay.toast(Talky_T("Toast_UrlCopied", id), "#8b5cf6", 3)
+    Talky_UI.button(page, x, y, 200, Talky_T("Btn_CopyCommand"), self, function(win)
+        win:copyUrlCommand(id)
     end, "primary")
     Talky_UI.label(page, x, y + ROW + 8, Talky_T("Hooks_BodyHint"), C.muted)
     Talky_UI.label(page, x, y + ROW * 2 + 8, Talky_T("Hooks_BodyExample"), C.text)
@@ -513,11 +617,22 @@ function Talky_Window:page_settings(page)
     if type(d.settings) ~= "table" then d.settings = {} end
     title(page, Talky_T("Page_settings"))
     local y = ROW + 16
+    -- In multiplayer the server's sandbox options set the limits: shown, not editable.
+    local mp = TalkyNet.mode() == "client"
+    local serverCaps = mp and Talky_Bridge.serverStatus().caps or nil
+    if mp then
+        Talky_UI.label(page, 0, y, Talky_UI.truncate(Talky_T("Settings_ServerNote"), page.width), C.muted)
+        y = y + ROW + 6
+    end
     for _, opt in ipairs(Talky_Config.editable) do
         local value = d.settings[opt.key]
         if value == nil then value = Talky_Config[opt.key] end
         local label = Talky_T(opt.labelKey)
-        if opt.type == "bool" then
+        if mp and opt.server then
+            Talky_UI.label(page, 0, y, label, C.text)
+            local v = serverCaps and serverCaps[opt.server]
+            Talky_UI.label(page, 360, y, Talky_T("Settings_ServerValue", v ~= nil and tostring(v) or "?"), C.muted)
+        elseif opt.type == "bool" then
             Talky_UI.tick(page, 0, y, page.width, label, value == true, self, function(win, on)
                 d.settings[opt.key] = on
                 win:markDirty()
@@ -533,7 +648,7 @@ function Talky_Window:page_settings(page)
         elseif opt.type == "text" then
             Talky_UI.label(page, 0, y, label, C.text)
             Talky_UI.entry(page, 360, y, 200, tostring(value or ""), self, function(win, text)
-                d.settings[opt.key] = string.sub(text, 1, opt.maxLength or 40)
+                d.settings[opt.key] = TalkyNet.cut(text, opt.maxLength or 40)
                 win:markDirty()
             end)
         else

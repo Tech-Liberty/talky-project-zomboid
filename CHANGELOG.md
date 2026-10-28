@@ -1,5 +1,95 @@
 # Changelog
 
+## 0.4.0 (2026-10-26)
+
+Talky runs on servers: hosted games and dedicated servers. Update the mod and the bridge together, and install the same mod version on the server and on every client.
+
+### Changes that break a 0.3.0 setup
+1. A dedicated webhook token typed in the F8 window of 0.3.0 is ignored: the bridge reads dedicated tokens from `hookTokens` in `bridge/config.json` only (`talky_config.json` can be written by every game mod). The webhook takes the bridge token, and the LibertyTalk URLs that carry the old dedicated token get `401 bad token` until the token is moved to `hookTokens` and the bridge restarted. The bridge window names each webhook concerned at start.
+2. An `http` step with `hmacSecret` written in `talky_config.json` is refused. Put the address and the secrets in `httpTargets` of `bridge/config.json` and write `"target": "<name>"` in the step.
+3. `talky_status.json` no longer holds the token (every game mod can read it; on a server, every mod of the server's list).
+4. New bridge commands `node bridge.js url <webhook> [--show] [--base <url>]` and `node bridge.js new-token` (npm scripts `url` and `new-token`): the full URL of a webhook and a new token are only given there.
+5. The "Copy URL" buttons of F8 copy the command `node bridge\bridge.js url <webhook>`, to run in the Talky folder, instead of a URL with its token.
+
+### Multiplayer
+- New server code in `media/lua/server/Talky/` (`Talky_Server`, `Talky_ServerRunner`, `Talky_Tags`). The streamer's game reads the jobs of its bridge and sends them to the server (module `Talky`). The server checks them, runs them around the streamer's character and answers. Every player sees the effects in the world.
+- Hosted games work. In 0.3.0 the effects ran in the host's game, which is a client of a separate server process, so most of them did not reach the world.
+- The bridge stays on the streamer's PC. Nothing runs on the server machine apart from the mod, and the server code never reads or writes files: in a hosted game, the server shares `Zomboid/Lua` with the host's game, and only the host's game reads the jobs.
+- Handshake: the game sends `hello` every 3 s until the server answers (2 minutes at most), and sends jobs only once the server allows them. A protocol version mismatch stops the relay and is shown on F8 > Status. Jobs go by 10 per message; a job without answer is sent again every 30 s until its time to live ends.
+- Who may use Talky on a server: roles with the CreateHorde capability (admin and moderator by default) when `Talky.AllowAdmins` is on, and the usernames listed in `Talky.AllowedPlayers`. The sender is the player of the connection, never a name taken from the message. A refused player is asked again every 30 s, so a permission given during the game applies without reconnecting. `Talky.AllowedPlayers` takes usernames separated by commas or semicolons: a space is part of a name, and only A to Z ignore case, as for the account names of the game.
+- The permission and the category toggles are checked again on every tick for the jobs already accepted: a player taken off the list loses their waiting and running jobs (`job_rejected`, `not_allowed`), and the steps of a category turned off give `action_failed` with `disabled`.
+- Hosted game: the host's account is not admin by default. F8 > Status explains it and offers an "Allow me (host)" button, which sends `/setaccesslevel "<username>" admin`.
+- 34 sandbox options on a "Talky" page (`media/sandbox-options.txt`, EN and FR `Sandbox.json`): access, zombies per action, per job and per 10 minutes (per player and for all players), spawn distance, steps per job, waiting and running jobs per player, jobs per minute, one toggle per category (zombies, items, vehicles, XP, heal and stats, weather, time, fire, helicopter, sounds), budgets per 10 minutes for items, vehicles and XP, forbidden items, server-wide cooldowns for weather, thunder, time and helicopter, noise radius, distance from other players, banner audience, actions of other mods. A world created before 0.4.0 uses the defaults.
+- Fire and the helicopter are off by default on a server. The helicopter, which the game sends to a random player, only runs while one player is online unless `Talky.HelicopterAnyTarget` is on. With fire off, zombies spawn without fire.
+- No Talky zombie, fire or vehicle appears within `Talky.ProtectRadius` (15 tiles) of another online player, nor in a safehouse the streamer may not enter. Vehicles only from the ground floor.
+- Fixed limits on a server: 50 waiting and 12 running jobs for all players, 10 zombies created per tick for the whole server, 100 items and 1000 XP per action, 12 game hours of weather per action, 900 s of `wait` per job, 10 `fire` steps per player and 20 for the whole server per 10 minutes, 60 `noise` and `sound` steps per player per 10 minutes, 12 `say` lines a minute per player and 60 for the whole server (beyond, the line shows above the character without going to the chat), 5 commands per second per player. Single player has none of the fire, sound and `say` budgets.
+- A job lives 15 minutes at most after the bridge created it, sooner when `jobTtlSeconds` of the bridge ends first; the bridge brings a larger `jobTtlSeconds` back to 900.
+- Every value of a job is checked on the server: only the known parameters of each step are kept, numbers are parsed strictly (`NaN`, `inf`, `1e308` and texts ending in "nan" give the default), texts are cut (names 40 characters, texts 200), colors must be `#rrggbb`, item and vehicle types must exist in the game scripts, XP only goes to skills (not to `Perks.None`, `MAX` or the categories) and in whole amounts (a value below 1 gives `action_failed` with `invalid`; single player keeps the fractions).
+- Each effect runs where the game expects it: world effects on the server; `heal` on the streamer's game; `stat` on the server, then sent to the player; `say` through the "say" chat; weather and storms through the server's climate updates; sounds heard by nearby players.
+- Answers: `not_allowed`, `invalid`, `unknown_action`, `disabled` and `expired` are final (the job is acknowledged so the bridge drops it, `job_rejected` is written, a banner shows the reason); `duplicate` counts as accepted; `busy` and `rate_limited` make the game send the job again later, in order. A job too large for one network message of the game is never sent: the streamer's game acknowledges it and reports `job_rejected` with `too_large`.
+- `action_failed`: a step that cannot be read comes with the action `step` and the code `invalid`; `refused` also means that the game created none of the zombies of a step.
+- Names above zombies: the server keeps a list (128 names, 32 per streamer, 30 minutes) and sends each change to every player; players who join later receive the whole list. Names of dead, despawned or reused zombies are removed every second.
+- `zombie_killed` is sent by the server to the game of the streamer whose job spawned the zombie, once per zombie (a zombie on fire used to trigger it twice).
+- Banners can be shown to every player (`Talky.BannerAudience` = 2), with the streamer's name in front; 6 a minute per streamer and 20 a minute in all, `notify` banners and named zombie deaths counted together, the others go to the streamer only.
+- From the server, the game writes only `zombie_killed`, `job_done`, `action_failed`, `job_rejected` and `job_expired`, with fixed fields, 60 lines a minute at most. `emit` steps are written from the game's own copy of the job. `test_workflow`, `game_started` and `player_died` only come from the game itself.
+- Console lines of the server are limited per player and per reason. The server prints `[Talky] server ready (Talky 0.4.0, protocol 1)` when it starts.
+- `Talky_Actions.lua` moved to `shared/`; the client runner (`Talky_Runner.lua`) is replaced by the server runner, which single player uses too. `Talky_Actions.register(name, fn, opts)`: on a server, an action of another mod runs only with `opts.network = true` and the option `Talky.AllowCustomActions`, and receives only its declared `opts.params`.
+
+### Fixed
+- Game events and **Test now** reach the bridge again. Since game version 42.20.1, mods may only write `.ini`, `.cfg`, `.txt`, `.log` and `.json` files: `talky_outbox.jsonl` was never written, so `zombie_killed`, `player_died`, `game_started`, `job_done`, `action_failed` and **Test now** were lost. The outbox is now `talky_outbox.txt`.
+- Weather: the current weather stops before a new one starts. A storm used to be refused while it rained.
+- `talky_ack.txt` is now `S` or `S s1 s2 ...`: every job up to `S` is taken, and `s1`, `s2`... too. An answer that arrives before the one of an older job no longer makes the bridge drop the older job. A 0.3.0 bridge still reads `S`.
+- A color that is not `#rrggbb` no longer breaks the names above zombies.
+- The values of `talky_config.json` are clamped to the bounds of the F8 window when the game reads them.
+
+### Single player
+Single player keeps the caps of F8 > Settings and has no sandbox limit, budget, category toggle or cooldown. Differences with 0.3.0:
+- Zombie names are cut at 40 characters (60 before).
+- At most 10 zombies are created per tick: a large horde appears over a few ticks.
+- Banners, `say`, `halo` and `emit` steps appear one tick later.
+- With 200 jobs waiting, a new job stays in the bridge and is sent again a few seconds later instead of being dropped.
+- A job that waits past its time to live (15 minutes at most) before it can start is dropped, and the bridge receives `job_expired`.
+- `item` and `script` must exist in the game scripts; `stat` accepts the 24 stat names of the game; `Perks.None` and `Perks.MAX` are refused.
+- `game_started` carries `{mode, host, server}` instead of no data.
+- `action_failed` carries a `code` (`cooldown`, `no_square`, `not_found`...) and `error` with the same value, instead of an error text.
+- An action registered by another mod receives `job = {seq, id, workflow, user}` as third argument instead of the raw job.
+
+### Bridge
+- Reads `talky_outbox.txt`, and still `talky_outbox.jsonl` (mod 0.3.0).
+- Reads the ack line `S s1 s2 ...`; `/health` returns `protocol` and `ackedAbove`.
+- `talky_status.json` carries `protocol` (2) and a test code (`testNonce`) drawn at each start. `test_workflow` runs only with that code. Otherwise F8 > Status shows "skipped: no test code (update the mod)" (mod older than 0.4.0) or "skipped: test code mismatch, press Test now again" (the bridge restarted after the window read the code); the entry also carries an English `error` for windows older than 0.4.0. Each kind of refusal is explained once per start in the bridge window. The code only stops `test_workflow` lines a Talky server would have the game write: a game mod can read it.
+- `talky_status.json` no longer holds the token, and lists in `hookTokens` the ids of the webhooks that have a dedicated token.
+- Dedicated webhook tokens come from `hookTokens` in `bridge/config.json` (16 characters or more); a `token` of a webhook in `talky_config.json` is ignored, with one warning per webhook at start.
+- `http` steps can name a target, `"target": "<name>"`, of `httpTargets` in `bridge/config.json`, which holds the address, the headers and the HMAC secret; the example workflow `report_to_libertytalk` uses the target `lt_report`. A target that still holds a `PASTE_...` placeholder is refused. In a step without target, `hmacSecret` is refused and `headers` are sent with a warning.
+- `node bridge.js url <webhook>` puts the full URL of a webhook in the clipboard and prints it masked (`--show` prints it, `--base <url>` sets the public URL). `node bridge.js new-token` writes a new random token in `config.json`, the rest of the file unchanged, and puts it in the clipboard without printing it.
+- `jobTtlSeconds` above 900 (or not a number) is brought back to 900, with one warning at start: the game and the server drop a job 15 minutes after the bridge created it.
+- A bridge that lost `bridge-state.json` but finds an inbox or an ack file starts its job numbers 1000 above every number in them, so a late answer of the server for an old job cannot acknowledge a new job that took its number. The highest number of the inbox also counts when the state file is behind it.
+- New game events `job_rejected {seq, workflow, reason}` and `job_expired {seq, workflow}`: printed with what to do, shown on F8 > Status, and never run a `gameEvents` workflow. `too_large` is printed as "not sent to the server".
+- Game events with no valid name are ignored; texts from the game are cleaned of control characters before they reach the console.
+
+### F8 window
+- Status: single player or multiplayer, the answer of the server, its limits, the categories it turned off, the jobs without answer, the last refused job, the "Allow me (host)" button for the host, and a warning when the bridge is older than 0.4.0.
+- Settings: in multiplayer, the three caps show the values of the server, read only.
+- Test now sends the test code read from `talky_status.json`.
+- No token in the window: the URLs of the Status page show `?token=*****`, the **Copy command** buttons (Status and Webhooks) copy `node bridge\bridge.js url <webhook>` and refuse a webhook id with other characters than A-Z, a-z, 0-9, `-` and `_`. The masked token field of the Webhooks page is replaced by a read-only line: dedicated token or not (from `hookTokens` of `talky_status.json`), set in `bridge/config.json` > `hookTokens`.
+- New texts in EN and FR `UI.json`.
+
+### Tests
+- `tools\test-lua.ps1` needs a JDK 25 or later (the classes of game 42.21 are Java 25 classes) and also finds the `java` folder of a dedicated server installed alone.
+- The Lua tests run one Lua state per game process (single player game, dedicated server with several clients, hosted game) and copy the messages between them with the game's own network serializer (`zombie.network.TableNetworkUtils`). The scenarios are split into `tools/lua-test/test_*.lua`.
+
+### Distribution
+- `mod.info`: `versionMin=42.20.1`, `modversion=0.4.0`, description for single player, hosted game and dedicated server. Same description in `Mod.json`.
+- Steam Workshop description: multiplayer section, tag `Multiplayer`.
+- READMEs: new "Multiplayer" section (install on a server, who may use Talky, every server option with its default and range, refused and delayed jobs, limits, checks still to do in a real game).
+
+### Known limits
+- The bridge must run on the streamer's PC; a server cannot read the jobs of a bridge on its own machine.
+- Weather and time of day are the same for every player. On a server, a blizzard or a tropical storm reaches the other players at the next climate update (up to 10 game minutes), a time change within about 10 seconds.
+- Names above zombies are lost when the zombie despawns, is reused by the game, after 30 minutes or when the server restarts.
+- Events of a streamer who is offline are lost; the jobs of a streamer offline for 15 minutes are dropped.
+- Tested with a simulated game API (Lua run in Kahlua outside the game): single player, a dedicated server with several clients, a hosted game. Still to check in a real game: `heal` and `stat` in multiplayer, names above zombies in multiplayer, the target of the helicopter on a server, the delay of blizzard and tropical storm on a server, the delay of a time change, the "Allow me (host)" flow, `say` through the chat, items on the ground on a server, the vehicle type check, the role and safehouse checks of the server code, the empty default of the text options. The checks listed for 0.3.0 still apply.
+
 ## 0.3.0 (2026-10-25)
 
 First public version, published on GitHub and prepared for the Steam Workshop.
@@ -47,5 +137,5 @@ First public version, published on GitHub and prepared for the Steam Workshop.
 - `poster.png` and `preview.png` are provisional images, to be replaced before the Workshop release.
 
 ### Known limits
-- Solo or host only.
+- Single player only. The README said "solo or host", but in a hosted game the host's game is a client of a separate server process, and the effects of 0.3.0 did not reach that server (see 0.4.0).
 - Tested with a simulated game API (Lua run in Kahlua outside the game). Name tags position, zombie aggro, `testHelicopter()` outside debug mode, weather stages and the custom key binding still need a check in a real game.

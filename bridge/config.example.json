@@ -5,6 +5,13 @@
   "zomboidLuaDir": "%USERPROFILE%/Zomboid/Lua",
   "jobTtlSeconds": 900,
   "httpAllowedHosts": ["*.liberty-talk.com"],
+  "hookTokens": {},
+  "httpTargets": {
+    "lt_report": {
+      "url": "https://api.liberty-talk.com/webhooks/workflow/PASTE_THE_TOKEN_OF_YOUR_INCOMING_WEBHOOK",
+      "headers": { "X-Webhook-Secret": "PASTE_THE_SECRET_OF_YOUR_INCOMING_WEBHOOK" }
+    }
+  },
 
   "settings": {
     "language": "en",
@@ -137,9 +144,7 @@
     "report_to_libertytalk": {
       "enabled": false,
       "steps": [
-        { "action": "http",
-          "url": "https://api.liberty-talk.com/webhooks/workflow/PASTE_THE_TOKEN_OF_YOUR_INCOMING_WEBHOOK",
-          "headers": { "X-Webhook-Secret": "PASTE_THE_SECRET_OF_YOUR_INCOMING_WEBHOOK" },
+        { "action": "http", "target": "lt_report",
           "body": { "event": "{{event}}", "name": "{{name}}", "hoursSurvived": "{{hoursSurvived}}", "zombieKills": "{{zombieKills}}" } }
       ]
     }

@@ -1,6 +1,6 @@
 {
   "name": "talky-bridge",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Receives LibertyTalk webhooks and turns them into jobs for the Talky mod of Project Zomboid.",
   "private": true,
   "license": "MIT",
@@ -20,6 +20,8 @@
   "scripts": {
     "start": "node bridge.js",
     "fire": "node bridge.js fire",
+    "url": "node bridge.js url",
+    "new-token": "node bridge.js new-token",
     "test": "node test/run-tests.mjs"
   }
 }

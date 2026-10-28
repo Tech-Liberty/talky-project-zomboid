@@ -1,23 +1,33 @@
 -- On-screen toasts and name tags above named zombies.
 -- Drawn with the TextManager in OnPostUIDraw so nothing blocks mouse clicks.
+--   single player : the names are in the zombies' modData (written by Talky_Tags), found by a
+--                   rescan every 5 s, or at once when Talky_Tags just named one.
+--   multiplayer   : the names come from the server (Talky_Client.tags, keyed by online id);
+--                   the zombies around are matched again every second and on every change.
+-- zombie_killed is sent by the server code (Talky_Tags), never from here.
 
 require "Talky/Talky_Config"
 require "Talky/Talky_Text"
+require "Talky/Talky_Net"
 require "Talky/Talky_Bridge"
 
 Talky_Overlay = {
     toasts = {},   -- { text, r, g, b, until }
-    tagged = {},   -- { zombie, name, r, g, b }
+    tagged = {},   -- { zombie, name, r, g, b, id }
     lastScan = 0,
+    scanVersion = -1,
 }
 
+-- "#rrggbb" -> r, g, b in 0..1; anything else gives the default color.
 local function hexToRgb(hex, dr, dg, db)
     if type(hex) ~= "string" then return dr, dg, db end
     hex = string.gsub(hex, "#", "")
     if string.len(hex) ~= 6 then return dr, dg, db end
-    return tonumber(string.sub(hex, 1, 2), 16) / 255,
-           tonumber(string.sub(hex, 3, 4), 16) / 255,
-           tonumber(string.sub(hex, 5, 6), 16) / 255
+    local r = tonumber(string.sub(hex, 1, 2), 16)
+    local g = tonumber(string.sub(hex, 3, 4), 16)
+    local b = tonumber(string.sub(hex, 5, 6), 16)
+    if not r or not g or not b then return dr, dg, db end
+    return r / 255, g / 255, b / 255
 end
 Talky_Overlay.hexToRgb = hexToRgb
 
@@ -30,13 +40,19 @@ function Talky_Overlay.toast(text, color, seconds)
     while #Talky_Overlay.toasts > 5 do table.remove(Talky_Overlay.toasts, 1) end
 end
 
+-- Single player: names a zombie of this game and shows it at once.
 function Talky_Overlay.tagZombie(zombie, name, color)
-    name = string.sub(tostring(name), 1, Talky_Config.maxNameLength)
+    name = TalkyNet.str(name, Talky_Config.maxNameLength, "") or ""
     local md = zombie:getModData()
     md.Talky_name = name
     md.Talky_color = color
     local r, g, b = hexToRgb(color, 0.6, 0.4, 1)
     table.insert(Talky_Overlay.tagged, { zombie = zombie, name = name, r = r, g = g, b = b })
+end
+
+-- A name was just given (single player): rescan on the next frame.
+function Talky_Overlay.rescanSoon()
+    Talky_Overlay.lastScan = 0
 end
 
 local function shadowText(tm, font, x, y, text, r, g, b, a)
@@ -61,8 +77,8 @@ local function drawToasts(tm, now)
     end
 end
 
--- Zombies that were tagged before a reload keep their name in modData; pick them up again.
-local function rescan(player)
+-- Single player: zombies that were tagged before a reload keep their name in modData; pick them up again.
+local function rescanModData()
     local list = getCell():getZombieList()
     if not list then return end
     local known = {}
@@ -72,15 +88,46 @@ local function rescan(player)
         local md = z:getModData()
         if md.Talky_name and not known[z] and not z:isDead() then
             local r, g, b = hexToRgb(md.Talky_color, 0.6, 0.4, 1)
-            table.insert(Talky_Overlay.tagged, { zombie = z, name = md.Talky_name, r = r, g = g, b = b })
+            table.insert(Talky_Overlay.tagged, { zombie = z, name = tostring(md.Talky_name), r = r, g = g, b = b })
         end
     end
 end
 
+-- Multiplayer: the zombies around whose online id (and outfit) match a name from the server.
+local function rescanServerTags()
+    local tags = Talky_Client and Talky_Client.tags or {}
+    local tagged = {}
+    if TalkyNet.isEmpty(tags) then
+        Talky_Overlay.tagged = tagged
+        return
+    end
+    local list = getCell():getZombieList()
+    if not list then return end
+    for i = 0, list:size() - 1 do
+        pcall(function()
+            local z = list:get(i)
+            local id = z:getOnlineID()
+            local e = tags[tostring(id)]
+            if e and not z:isDead() and (e.p == 0 or z:getPersistentOutfitID() == e.p) then
+                local r, g, b = hexToRgb(e.color, 0.6, 0.4, 1)
+                tagged[#tagged + 1] = { zombie = z, name = e.name, r = r, g = g, b = b, id = id }
+            end
+        end)
+    end
+    Talky_Overlay.tagged = tagged
+end
+
 local function drawTags(tm, player, now)
-    if now - Talky_Overlay.lastScan > 5000 then
+    local mp = TalkyNet.mode() == "client"
+    if mp then
+        local version = Talky_Client and Talky_Client.tagsVersion or 0
+        if now - Talky_Overlay.lastScan > 1000 or version ~= Talky_Overlay.scanVersion then
+            Talky_Overlay.lastScan, Talky_Overlay.scanVersion = now, version
+            pcall(rescanServerTags)
+        end
+    elseif now - Talky_Overlay.lastScan > 5000 then
         Talky_Overlay.lastScan = now
-        pcall(rescan, player)
+        pcall(rescanModData)
     end
     local pnum = player:getPlayerNum()
     local px, py = player:getX(), player:getY()
@@ -89,7 +136,7 @@ local function drawTags(tm, player, now)
     for i = #Talky_Overlay.tagged, 1, -1 do
         local t = Talky_Overlay.tagged[i]
         local z = t.zombie
-        if z:isDead() or not z:getCurrentSquare() then
+        if z:isDead() or not z:getCurrentSquare() or (t.id and z:getOnlineID() ~= t.id) then
             table.remove(Talky_Overlay.tagged, i)
         else
             local zx, zy, zz = z:getX(), z:getY(), z:getZ()
@@ -108,17 +155,10 @@ local function onPostUIDraw()
     local tm = getTextManager()
     local now = getTimestampMs()
     if #Talky_Overlay.toasts > 0 then drawToasts(tm, now) end
-    if Talky_Config.showNameTags then drawTags(tm, player, now) end
-end
-
-local function onZombieDead(zombie)
-    local name = zombie:getModData().Talky_name
-    if not name then return end
-    local player = getPlayer()
-    local ok, attacker = pcall(function() return zombie:getAttackedBy() end)
-    local byPlayer = ok and player ~= nil and attacker == player
-    Talky_Overlay.toast(Talky_T("Toast_ZombieDown", name), "#ff5555")
-    Talky_Bridge.emit("zombie_killed", { name = name, byPlayer = byPlayer })
+    if Talky_Config.showNameTags then
+        local ok, err = pcall(drawTags, tm, player, now)
+        if not ok and Talky_Config.debug then TalkyNet.log("name tags: " .. tostring(err)) end
+    end
 end
 
 local function onPlayerDeath(player)
@@ -129,5 +169,6 @@ local function onPlayerDeath(player)
 end
 
 Events.OnPostUIDraw.Add(onPostUIDraw)
-Events.OnZombieDead.Add(onZombieDead)
 Events.OnPlayerDeath.Add(onPlayerDeath)
+
+return Talky_Overlay

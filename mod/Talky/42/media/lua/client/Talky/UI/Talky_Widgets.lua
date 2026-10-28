@@ -6,6 +6,7 @@ require "ISUI/ISTextEntryBox"
 require "ISUI/ISComboBox"
 require "ISUI/ISTickBox"
 require "ISUI/ISScrollingListBox"
+require "Talky/Talky_Net"
 
 Talky_UI = {
     FONT = UIFont.Small,
@@ -139,7 +140,8 @@ function Talky_UI.truncate(text, maxW, font)
     local tm = getTextManager()
     if tm:MeasureStringX(font or Talky_UI.FONT, text) <= maxW then return text end
     while string.len(text) > 1 and tm:MeasureStringX(font or Talky_UI.FONT, text .. "...") > maxW do
-        text = string.sub(text, 1, string.len(text) - 1)
+        -- never half of an emoji (TalkyNet.cut drops a lone first half too)
+        text = TalkyNet.cut(text, string.len(text) - 1)
     end
     return text .. "..."
 end

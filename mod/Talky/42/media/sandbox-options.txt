@@ -1,0 +1,311 @@
+VERSION = 1,
+
+option Talky.AllowedPlayers
+{
+	type = string,
+	default = ,
+	page = Talky,
+	translation = Talky_AllowedPlayers,
+}
+
+option Talky.AllowAdmins
+{
+	type = boolean,
+	default = true,
+	page = Talky,
+	translation = Talky_AllowAdmins,
+}
+
+option Talky.MaxZombiesPerAction
+{
+	type = integer,
+	min = 1,
+	max = 300,
+	default = 30,
+	page = Talky,
+	translation = Talky_MaxZombiesPerAction,
+}
+
+option Talky.MaxZombiesPerJob
+{
+	type = integer,
+	min = 1,
+	max = 500,
+	default = 60,
+	page = Talky,
+	translation = Talky_MaxZombiesPerJob,
+}
+
+option Talky.MaxZombiesPer10Min
+{
+	type = integer,
+	min = 1,
+	max = 2000,
+	default = 150,
+	page = Talky,
+	translation = Talky_MaxZombiesPer10Min,
+}
+
+option Talky.MaxZombiesPer10MinServer
+{
+	type = integer,
+	min = 1,
+	max = 5000,
+	default = 400,
+	page = Talky,
+	translation = Talky_MaxZombiesPer10MinServer,
+}
+
+option Talky.MaxSpawnDistance
+{
+	type = integer,
+	min = 5,
+	max = 150,
+	default = 40,
+	page = Talky,
+	translation = Talky_MaxSpawnDistance,
+}
+
+option Talky.MaxStepsPerJob
+{
+	type = integer,
+	min = 10,
+	max = 500,
+	default = 100,
+	page = Talky,
+	translation = Talky_MaxStepsPerJob,
+}
+
+option Talky.MaxQueuedJobs
+{
+	type = integer,
+	min = 1,
+	max = 50,
+	default = 10,
+	page = Talky,
+	translation = Talky_MaxQueuedJobs,
+}
+
+option Talky.MaxActiveJobs
+{
+	type = integer,
+	min = 1,
+	max = 20,
+	default = 4,
+	page = Talky,
+	translation = Talky_MaxActiveJobs,
+}
+
+option Talky.MaxJobsPerMinute
+{
+	type = integer,
+	min = 1,
+	max = 120,
+	default = 30,
+	page = Talky,
+	translation = Talky_MaxJobsPerMinute,
+}
+
+option Talky.AllowZombies
+{
+	type = boolean,
+	default = true,
+	page = Talky,
+	translation = Talky_AllowZombies,
+}
+
+option Talky.AllowItems
+{
+	type = boolean,
+	default = true,
+	page = Talky,
+	translation = Talky_AllowItems,
+}
+
+option Talky.MaxItemsPer10Min
+{
+	type = integer,
+	min = 1,
+	max = 5000,
+	default = 300,
+	page = Talky,
+	translation = Talky_MaxItemsPer10Min,
+}
+
+option Talky.ItemDenylist
+{
+	type = string,
+	default = ,
+	page = Talky,
+	translation = Talky_ItemDenylist,
+}
+
+option Talky.AllowVehicles
+{
+	type = boolean,
+	default = true,
+	page = Talky,
+	translation = Talky_AllowVehicles,
+}
+
+option Talky.MaxVehiclesPer10Min
+{
+	type = integer,
+	min = 1,
+	max = 20,
+	default = 2,
+	page = Talky,
+	translation = Talky_MaxVehiclesPer10Min,
+}
+
+option Talky.AllowXp
+{
+	type = boolean,
+	default = true,
+	page = Talky,
+	translation = Talky_AllowXp,
+}
+
+option Talky.MaxXpPer10Min
+{
+	type = integer,
+	min = 1,
+	max = 100000,
+	default = 5000,
+	page = Talky,
+	translation = Talky_MaxXpPer10Min,
+}
+
+option Talky.AllowPlayerEffects
+{
+	type = boolean,
+	default = true,
+	page = Talky,
+	translation = Talky_AllowPlayerEffects,
+}
+
+option Talky.AllowWeather
+{
+	type = boolean,
+	default = true,
+	page = Talky,
+	translation = Talky_AllowWeather,
+}
+
+option Talky.WeatherCooldownMinutes
+{
+	type = integer,
+	min = 0,
+	max = 240,
+	default = 15,
+	page = Talky,
+	translation = Talky_WeatherCooldownMinutes,
+}
+
+option Talky.ThunderCooldownSeconds
+{
+	type = integer,
+	min = 0,
+	max = 3600,
+	default = 30,
+	page = Talky,
+	translation = Talky_ThunderCooldownSeconds,
+}
+
+option Talky.AllowTime
+{
+	type = boolean,
+	default = true,
+	page = Talky,
+	translation = Talky_AllowTime,
+}
+
+option Talky.TimeCooldownMinutes
+{
+	type = integer,
+	min = 0,
+	max = 240,
+	default = 30,
+	page = Talky,
+	translation = Talky_TimeCooldownMinutes,
+}
+
+option Talky.AllowFire
+{
+	type = boolean,
+	default = false,
+	page = Talky,
+	translation = Talky_AllowFire,
+}
+
+option Talky.AllowHelicopter
+{
+	type = boolean,
+	default = false,
+	page = Talky,
+	translation = Talky_AllowHelicopter,
+}
+
+option Talky.HelicopterAnyTarget
+{
+	type = boolean,
+	default = false,
+	page = Talky,
+	translation = Talky_HelicopterAnyTarget,
+}
+
+option Talky.HelicopterCooldownMinutes
+{
+	type = integer,
+	min = 0,
+	max = 600,
+	default = 60,
+	page = Talky,
+	translation = Talky_HelicopterCooldownMinutes,
+}
+
+option Talky.AllowSounds
+{
+	type = boolean,
+	default = true,
+	page = Talky,
+	translation = Talky_AllowSounds,
+}
+
+option Talky.MaxNoiseRadius
+{
+	type = integer,
+	min = 1,
+	max = 300,
+	default = 80,
+	page = Talky,
+	translation = Talky_MaxNoiseRadius,
+}
+
+option Talky.ProtectRadius
+{
+	type = integer,
+	min = 0,
+	max = 100,
+	default = 15,
+	page = Talky,
+	translation = Talky_ProtectRadius,
+}
+
+option Talky.BannerAudience
+{
+	type = enum,
+	numValues = 2,
+	default = 1,
+	page = Talky,
+	translation = Talky_BannerAudience,
+	valueTranslation = Talky_BannerAudience,
+}
+
+option Talky.AllowCustomActions
+{
+	type = boolean,
+	default = false,
+	page = Talky,
+	translation = Talky_AllowCustomActions,
+}
