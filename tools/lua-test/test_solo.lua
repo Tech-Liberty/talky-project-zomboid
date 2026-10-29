@@ -1,14 +1,15 @@
--- Single player: the server/ files run in the same Lua state as the client; jobs go through
+-- Single player: the server/ files run in the same Lua state as the client and read the jobs
+-- of the bridge themselves (Talky_Inbox); the effects of the player's own game go through
 -- TalkyNet's local queues (one tick each way) and the caps of talky_config.json apply (0.3.0).
 
 local JSON = H.JSON
 
 section("single player: start")
 
--- A 0.4.0 bridge writes no "token" here (every mod can read the file) and lists in hookTokens
--- the webhooks with a dedicated token. The fake "token" proves the window never takes one.
+-- A bridge writes no "token" here (every mod can read the file) and lists in hookTokens the
+-- webhooks with a dedicated token. The fake "token" proves the window never takes one.
 local STATUS = {
-    ts = NOW, version = "0.4.0", protocol = 2, testNonce = "n0nce-1", port = 7420, token = "GLOBALTOKEN", pending = 2, publicUrl = "",
+    ts = NOW, version = "0.5.0", protocol = 3, mode = "solo", testNonce = "n0nce-1", port = 7420, token = "GLOBALTOKEN", pending = 2, publicUrl = "",
     webhooks = { "follow", "secret", "points" }, hookTokens = { "secret" },
     recent = {
         { at = "2026-10-25T10:00:00.000Z", source = "hook:follow", workflow = "new_follower", user = "Bob", job = 1, steps = 2 },
@@ -53,8 +54,10 @@ local E, W = SP.E, SP.world
 
 check(E.Talky_Window ~= nil and E.Talky_Actions ~= nil and E.Talky_T ~= nil and E.Talky_Client ~= nil and E.TalkyNet ~= nil,
     "client modules loaded")
-check(E.Talky_Server ~= nil and E.Talky_ServerRunner ~= nil and E.Talky_Tags ~= nil, "server modules loaded in the same Lua state")
+check(E.Talky_Server ~= nil and E.Talky_ServerRunner ~= nil and E.Talky_Tags ~= nil and E.Talky_Inbox ~= nil, "server modules loaded in the same Lua state")
 check(H.g(SP, "Talky_Runner") == nil, "the 0.3.0 client runner is gone")
+check(E.Talky_Bridge.poll == nil and E.Talky_Bridge.hello == nil and E.Talky_Bridge.pending == nil and E.Talky_Bridge.onJobAcks == nil,
+    "the 0.4.0 relay is gone: the game client reads no job")
 check(E.TalkyNet.mode() == "sp", "mode: sp")
 check(E.Talky_Settings.data ~= nil and E.Talky_Settings.data.webhooks.secret ~= nil, "talky_config.json read at game start")
 check(E.Talky_Config.maxZombiesPerAction == 20, "settings from talky_config.json applied")
@@ -62,8 +65,8 @@ local gs = H.events(SP, "game_started")
 check(#gs == 1 and gs[1].data.mode == "sp" and gs[1].data.host == false, "game_started written to talky_outbox.txt at start (mode sp)")
 check(fs["talky_outbox.jsonl"] == nil and #SP.refusedWrites == 0, "nothing written to the 0.3.0 talky_outbox.jsonl (the game refuses .jsonl)")
 H.tick(3)
-check(E.Talky_Bridge.hello.state == "allowed", "hello answered by the local server code within 3 ticks")
-check(E.Talky_Bridge.allowMe() == false, "Allow me does nothing in single player")
+check(E.Talky_Inbox.started == true and H.logHas(SP, "inbox ready, last seq = 0 %(sp%)"), "the server code of the game reads the inbox from the first tick")
+check(E.Talky_Remote.allowMe() == false and E.Talky_Remote.active() == false, "Allow me and the server requests do nothing in single player")
 
 ---------------------------------------------------------------- the local transport
 
@@ -187,9 +190,9 @@ for _, lang in ipairs({ "EN", "FR" }) do
             and textShown(E.Talky_T("Status_Skipped", E.Talky_T("Skip_no_matching_route")))
             and E.Talky_T("Skip_no_matching_route") == "aucune route ne correspond", "skip reasons translated (FR)")
     end
-    check(textShown("(v0.4.0)"), "bridge version shown on the Status page")
+    check(textShown("(v0.5.0)"), "bridge version shown on the Status page")
     check(textShown(E.Talky_T("Mode_Solo")), "Status page: single player mode")
-    check(not textShown(E.Talky_T("Bridge_TooOld")), "no 'bridge too old' warning with a 0.4.0 bridge")
+    check(not textShown(E.Talky_T("Bridge_TooOld")), "no 'bridge too old' warning with a 0.5.0 bridge")
     check(textShown("erreur : http refused") or textShown("error: http refused"), "bridge errors shown on the Status page")
     check(textShown("(off) off_wf"), "disabled workflows marked (off)")
 
@@ -441,8 +444,8 @@ for _, e in ipairs(H.events(SP, "action_failed")) do
     if e.data.seq == 6 then codes[#codes + 1] = e.data.action .. ":" .. e.data.code end
 end
 table.sort(codes)
-check(table.concat(codes, ",") == "give_item:not_found,stat:not_found,vehicle:not_found,xp:not_found,xp:not_found,xp:not_found",
-    "unknown stat, vehicle, item and perk (None, MAX, a static method) reported as not_found (" .. table.concat(codes, ",") .. ")")
+check(table.concat(codes, ",") == "emit:invalid,give_item:not_found,stat:not_found,vehicle:not_found,xp:not_found,xp:not_found,xp:not_found",
+    "unknown stat, vehicle, item and perk (None, MAX, a static method) reported as not_found, an emit of test_workflow as invalid (" .. table.concat(codes, ",") .. ")")
 check(#H.events(SP, "test_workflow") == 0, "an emit step never writes test_workflow")
 
 -- actions of other mods keep the 0.3.0 contract in single player
@@ -482,18 +485,18 @@ check(not H.hasToast(SP, "two"), "still waiting after 599 s")
 H.wait(3000)
 check(H.hasToast(SP, "two"), "a 5000 s wait ends after 600 s")
 
--- a full queue answers busy: the job is kept and sent again (0.3.0 dropped it)
+-- a full queue: the job stays in the inbox and is read again a second later (0.3.0 dropped it)
 H.bridgeApplyAck(SP)
 E.Talky_Config.maxQueuedJobs, E.Talky_Config.maxActiveJobs = 3, 2
 local jobs = {}
 for s = 20, 27 do jobs[#jobs + 1] = { seq = s, workflow = "q" .. s, steps = { { action = "wait", seconds = 20 }, { action = "notify", text = "q" .. s } } } end
 H.addInbox(SP, jobs)
-H.tick(20)
-check(E.Talky_ServerRunner.pendingCount() == 3 and fs["talky_ack.txt"] == "22", "queue full: 3 jobs of the batch taken, 5 answered busy and not acked (" .. tostring(fs["talky_ack.txt"]) .. ")")
-H.tick(60)
-check(E.Talky_ServerRunner.pendingCount() == 5 and fs["talky_ack.txt"] == "24", "busy jobs sent again 5 s later: the queue fills up again (2 running + 3 waiting)")
+H.tick(10)
+check(E.Talky_ServerRunner.pendingCount() == 3 and fs["talky_ack.txt"] == "22", "queue full: 3 jobs taken, the 5 others stay in the inbox, not acked (" .. tostring(fs["talky_ack.txt"]) .. ")")
+H.tick(30)
+check(E.Talky_ServerRunner.pendingCount() == 5 and fs["talky_ack.txt"] == "24", "read again a second later: the queue fills up again (2 running + 3 waiting)")
 H.wait(120000)
-check(fs["talky_ack.txt"] == "27" and H.hasToast(SP, "q27"), "busy jobs sent again later, accepted and run (" .. tostring(fs["talky_ack.txt"]) .. ")")
+check(fs["talky_ack.txt"] == "27" and H.hasToast(SP, "q27"), "the jobs left in the inbox are taken later and run, in order (" .. tostring(fs["talky_ack.txt"]) .. ")")
 E.Talky_Config.maxQueuedJobs, E.Talky_Config.maxActiveJobs = 200, 8
 
 -- paused game: no tick at all (IngameState skips OnTick)
@@ -506,17 +509,18 @@ SP.paused = false
 H.tick(15)
 check(fs["talky_ack.txt"] == "30" and H.hasToast(SP, "after pause"), "the job runs once the game goes on")
 
--- dead player: nothing relayed, a job does not move
+-- dead player: the jobs are taken (they wait in the game, within their time to live), none moves
 H.bridgeApplyAck(SP)
 H.addInbox(SP, { { seq = 31, workflow = "d", steps = { { action = "wait", seconds = 2 }, { action = "notify", text = "alive again" } } } })
 H.tick(15)
 acc.dead = true
 H.addInbox(SP, { { seq = 32, workflow = "d2", steps = { { action = "notify", text = "second" } } } })
 H.wait(10000)
-check(fs["talky_ack.txt"] == "31" and not H.hasToast(SP, "alive again"), "while the player is dead: the running job waits, no new job is read")
+check(fs["talky_ack.txt"] == "32" and not H.hasToast(SP, "alive again") and not H.hasToast(SP, "second"),
+    "while the player is dead: the running job waits, the new one is taken and waits too")
 acc.dead = false
 H.tick(20)
-check(fs["talky_ack.txt"] == "32" and H.hasToast(SP, "alive again") and H.hasToast(SP, "second"), "both jobs go on after the respawn")
+check(H.hasToast(SP, "alive again") and H.hasToast(SP, "second"), "both jobs go on after the respawn")
 
 -- Test now: the nonce of talky_status.json, the translated test name
 H.clearOutbox(SP)
@@ -588,16 +592,15 @@ H.bridgeApplyAck(SP)
 H.addInbox(SP, { { seq = 44, workflow = "other", steps = { { action = "notify", text = "in between" } } } })
 H.wait(10 * 60000, 10000)
 local ends = H.events(SP, "event_end")
-check(#ends == 1 and ends[1].data.k == 4 and H.hasToast(SP, "in between"), "an emit step 40 minutes into a job is written (the local copy lives as long as the job)")
-local copy43
-for _, r in pairs(E.Talky_Bridge.relayed) do if r.seq == 43 then copy43 = r end end
-check(copy43 and copy43.steps == nil and copy43.done == true and copy43.workflow == "timer", "after job_done the local copy keeps its workflow name only")
+check(#ends == 1 and ends[1].data.k == 4 and H.hasToast(SP, "in between"), "an emit step 40 minutes into a job is written by the code that runs the job")
+check(ends[1] and ends[1].data.streamer == nil, "single player: the events name no streamer")
 
--- the 60-a-minute budget is for lines from a remote server: single player writes them all
+-- the client handles no "emit" message any more: the server code writes the outbox itself
 H.clearOutbox(SP)
-for i = 1, 100 do E.TalkyNet.toClient(SP.localPlayer, "emit", { event = "job_done", data = { seq = 5000 + i } }) end
+E.TalkyNet.toClient(SP.localPlayer, "emit", { event = "job_done", data = { seq = 5001 } })
+E.TalkyNet.toClient(SP.localPlayer, "emitStep", { seq = 43, index = 5 })
 H.tick(2)
-check(#H.events(SP, "job_done") == 100, "single player: 100 game events in a minute, all written (as 0.3.0)")
+check(#H.outbox(SP) == 0, "an 'emit' or 'emitStep' message (the 0.4.0 relay) writes nothing")
 
 -- a refused Test now: the translated reason, not the English text meant for older windows
 STATUS.recent[#STATUS.recent + 1] = { at = "2026-10-25T10:00:05.000Z", source = "test", workflow = "new_follower",
@@ -612,22 +615,25 @@ check(textShown(E.Talky_T("Status_Skipped", E.Talky_T("Skip_test_code_mismatch")
     "a refused Test now shows 'skipped: test code mismatch...' (translated), without the English error")
 E.Talky_Window.instance:close()
 
--- the server code of a single player game did not start: no "server console" to look at
+-- the server code of a single player game did not load: no "server console" to look at
 local accQ = H.account("Quiet", { x = 50, y = 50 })
-local SQ = H.newSP(accQ, { fs = {}, name = "SP3" })
-SQ.E.TalkyNet.serverHandler = nil
-H.wait(125000, 1000)
+local fsQ = {}
+H.setInbox({ fs = fsQ }, { { seq = 1, steps = { { action = "notify", text = "never" } } } })
+local SQ = H.newSP(accQ, { fs = fsQ, name = "SP3", noServer = true })
+H.wait(5000, 1000)
 SQ.ui.TEXTS = {}
 SQ.E.Talky_Window.toggle()
 SQ.E.Talky_Window.instance:showPage("status")
 local soloText, serverText = false, false
 for _, t in ipairs(SQ.ui.TEXTS) do
-    if string.find(t, "Talky game code did not start", 1, true) then soloText = true end
+    if string.find(t, "Talky game code did not load", 1, true) then soloText = true end
     if string.find(t, "server console", 1, true) then serverText = true end
 end
 SQ.E.Talky_Window.instance:close()
-check(SQ.E.Talky_Bridge.hello.state == "no_answer" and soloText and not serverText and H.logHas(SQ, "errors in console%.txt"),
-    "single player without its server code: F8 and the console point to console.txt, not to a server console")
+check(soloText and not serverText and H.logHas(SQ, "errors in console%.txt") and fsQ["talky_ack.txt"] == nil,
+    "single player without its server code: nothing is read, F8 and the console point to console.txt, not to a server console")
+-- the window asked whether Talky_Inbox and Talky_Server exist: not unknown globals of the mod
+SQ.unknown.Talky_Inbox, SQ.unknown.Talky_Server = nil, nil
 H.hygiene(SQ, "single player without its server code")
 
 H.tick(5)

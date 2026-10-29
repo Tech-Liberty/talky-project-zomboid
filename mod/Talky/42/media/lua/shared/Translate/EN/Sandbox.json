@@ -1,11 +1,6 @@
 {
     "Sandbox_Talky": "Talky",
 
-    "Sandbox_Talky_AllowedPlayers": "Allowed players",
-    "Sandbox_Talky_AllowedPlayers_tooltip": "Usernames that may use Talky on this server, separated by commas or semicolons (a space is part of the name; A to Z are not case-sensitive). Add a streamer after they joined once and set a password.",
-    "Sandbox_Talky_AllowAdmins": "Admins and moderators may use Talky",
-    "Sandbox_Talky_AllowAdmins_tooltip": "Players whose role has the CreateHorde capability (admin and moderator by default) may use Talky without being in the list above.",
-
     "Sandbox_Talky_MaxZombiesPerAction": "Max zombies per action",
     "Sandbox_Talky_MaxZombiesPerAction_tooltip": "Zombies created by one spawn or horde step, at most.",
     "Sandbox_Talky_MaxZombiesPerJob": "Max zombies per job",
@@ -17,13 +12,13 @@
     "Sandbox_Talky_MaxSpawnDistance": "Max spawn distance (tiles)",
     "Sandbox_Talky_MaxSpawnDistance_tooltip": "Talky zombies appear at most this far from the streamer.",
     "Sandbox_Talky_MaxStepsPerJob": "Max steps per job",
-    "Sandbox_Talky_MaxStepsPerJob_tooltip": "Steps beyond this number are dropped.",
+    "Sandbox_Talky_MaxStepsPerJob_tooltip": "Steps beyond this number are dropped (the server console says how many).",
     "Sandbox_Talky_MaxQueuedJobs": "Max waiting jobs per player",
-    "Sandbox_Talky_MaxQueuedJobs_tooltip": "Jobs waiting for a free slot. Beyond that, the streamer's game sends them again a few seconds later.",
+    "Sandbox_Talky_MaxQueuedJobs_tooltip": "Jobs waiting for a free slot. Beyond that, the next jobs stay in the bridge's inbox and are read again a second later.",
     "Sandbox_Talky_MaxActiveJobs": "Max jobs running at the same time per player",
     "Sandbox_Talky_MaxActiveJobs_tooltip": "A job holds its slot during its wait steps too.",
     "Sandbox_Talky_MaxJobsPerMinute": "Max jobs per minute per player",
-    "Sandbox_Talky_MaxJobsPerMinute_tooltip": "Extra jobs are sent again by the streamer's game later, until their time to live ends.",
+    "Sandbox_Talky_MaxJobsPerMinute_tooltip": "Extra jobs stay in the bridge's inbox until the minute is over, or until their time to live ends.",
 
     "Sandbox_Talky_AllowZombies": "Zombies and hordes",
     "Sandbox_Talky_AllowZombies_tooltip": "Allows the spawn_zombie and horde actions.",

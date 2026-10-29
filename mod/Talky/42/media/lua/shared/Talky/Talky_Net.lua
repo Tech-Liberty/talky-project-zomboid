@@ -1,12 +1,15 @@
--- Messages between the game client (Talky_Bridge, Talky_Client) and the Talky server code
+-- Messages between the game client (Talky_Client, Talky_Remote) and the Talky server code
 -- (Talky_Server, Talky_ServerRunner, Talky_Tags), the same path in every mode:
 --   single player : both sides live in this Lua state. Each direction has a queue drained on
 --                   the next tick (never a direct call), and the payload is copied the way the
 --                   network copies it (plain data only, an empty table arrives as nil).
 --   multiplayer   : client -> server with sendClientCommand, server -> client with
 --                   sendServerCommand, module "Talky" (Events.OnClientCommand/OnServerCommand).
--- Also: finding a player by username, and the strict parsers used on every value that
--- comes from a job or from the network.
+-- Jobs never travel this way: the server code reads them from the bridge's files itself
+-- (Talky_Inbox). What does: banners and effects of the player's own game (fx), names above
+-- zombies, and the F8 window of the admins (status, streamers, configuration).
+-- Also: finding a player by username, the size of a message, and the strict parsers used on
+-- every value that comes from a job or from the network.
 
 require "Talky/Talky_Config"
 
@@ -149,15 +152,15 @@ end
 
 local MAX_DEPTH = 16
 
-local function copyValue(v, depth)
+local function copyValue(v, depth, maxDepth)
     local t = type(v)
     if t == "string" or t == "number" or t == "boolean" then return v end
-    if t ~= "table" or depth >= MAX_DEPTH then return nil end
+    if t ~= "table" or depth >= maxDepth then return nil end
     local out = {}
     for k, val in pairs(v) do
         local kt = type(k)
         if kt == "string" or kt == "number" then
-            local c = copyValue(val, depth + 1)
+            local c = copyValue(val, depth + 1, maxDepth)
             if c ~= nil then out[k] = c end
         end
     end
@@ -166,12 +169,47 @@ end
 
 -- Copy of args as the other side receives it: keys string or number, values string,
 -- number, boolean or table (anything else dropped), a top-level empty table becomes nil.
-function TalkyNet.copy(args)
+-- Tables nested deeper than maxDepth (16 by default) are dropped.
+function TalkyNet.copy(args, maxDepth)
     if type(args) ~= "table" then return nil end
-    local out = copyValue(args, 0)
+    local out = copyValue(args, 0, maxDepth or MAX_DEPTH)
     if TalkyNet.isEmpty(out) then return nil end
     return out
 end
+
+-- A message is written into the connection's packet buffer, 1,000,000 bytes that never grow:
+-- past it sending throws (and the game keeps a lock of that connection). Upper bound of the
+-- bytes the game's serializer (TableNetworkUtils.save) writes for a value: a type byte, then
+-- string = 2-byte length + UTF-8 (3 bytes at most per UTF-16 unit), number = 8 bytes,
+-- boolean = 1, table = a 4-byte count and its pairs. TalkyNet.MAX_MESSAGE + 1 for a value that
+-- must never be sent: a string that may pass 32,767 bytes (GameWindow$StringUTF.save writes the
+-- length as a signed short: the receiver would read garbage), nesting deeper than 32.
+TalkyNet.MAX_MESSAGE = 900000
+local MAX_STRING_UNITS = 10922   -- 3 * 10922 = 32766 bytes
+local function netSize(v, depth)
+    local t = type(v)
+    if t == "string" then
+        if string.len(v) > MAX_STRING_UNITS then return TalkyNet.MAX_MESSAGE + 1 end
+        return 3 + 3 * string.len(v)
+    end
+    if t == "number" then return 9 end
+    if t == "boolean" then return 2 end
+    if t ~= "table" then return 0 end
+    if depth > 32 then return TalkyNet.MAX_MESSAGE + 1 end
+    local n = 5
+    for k, val in pairs(v) do
+        local kt = type(k)
+        if kt == "string" or kt == "number" then
+            n = n + netSize(k, depth + 1) + netSize(val, depth + 1)
+            if n > TalkyNet.MAX_MESSAGE then return n end
+        end
+    end
+    return n
+end
+function TalkyNet.netSize(v) return netSize(v, 0) end
+
+-- Fits in one message of the game.
+function TalkyNet.fits(v) return netSize(v, 0) <= TalkyNet.MAX_MESSAGE end
 
 ---------------------------------------------------------------- sending
 

@@ -1,87 +1,68 @@
--- Talky server code: receives the jobs the streamers' games relay from their bridge, checks
--- them and hands them to Talky_ServerRunner. Module "Talky", commands from the client:
---   hello { v, client }      -> helloAck { v, allowed, reason, caps, server, mode }
---   jobs  { v, list = {...} } -> jobAcks { list = { { seq, id, ok, reason, retry_ms, truncated } } }
---   tags                      -> tags { reset, list } (names above zombies, for late joiners)
--- Order of the checks for every command: rate limit, command, permission, validation, dedup,
--- queue. Replies carry reason codes only, never error texts.
---   acked by the client (final): not_allowed, invalid, duplicate, unknown_action, disabled, expired
---   retried by the client      : busy, rate_limited (with retry_ms)
--- The steps refused at acceptance are reported (action_failed) once the answer is final only:
--- a job answered busy or rate_limited comes back, and would report them again at every try.
--- Who may use Talky on a server: the username in Talky.AllowedPlayers (names separated by
--- commas or semicolons, a space is part of a name; A-Z not case-sensitive, like the game's
--- account database: TalkyNet.nameKey), or (Talky.AllowAdmins and the player's role has the
--- CreateHorde capability: admins and moderators by default).
--- In single player: always. Nothing here reads or writes files (in a hosted game the server
--- shares Zomboid/Lua with the host's client).
--- Runs on the server and in single player only.
+-- Talky server code: what the players' games ask the server (module "Talky"), and the game
+-- events the server writes for the bridge itself. The jobs never come from a client: the
+-- server reads them from the bridge's files (Talky_Inbox).
+-- Commands from the client (every one rate limited, 5 a second per player):
+--   status                     -> status { mode, version, admin, streamer, caps, bridge, recent? }
+--   tags                       -> tags { reset, list } (names above zombies, for late joiners)
+-- Admins only (role with the CreateHorde capability, checked here at every command):
+--   streamers                  -> streamers { list = { { name, token, online } }, port, publicUrl }
+--   streamer { op, name }      -> streamerAck { op, name, ok, reason }: op = add | remove | token,
+--                                 written to the outbox for the bridge (it draws the tokens)
+--   config                     -> config { data } or config { error } (talky_config.json)
+--   saveConfig { data }        -> configSaved { ok, error }
+--   test { workflow, vars }    -> testAck { ok, error }: test_workflow in the outbox, for the admin
+-- Answers carry reason codes only, never error texts. The tokens of the streamers only ever go
+-- to an admin who asked for them.
+-- Game events written here (server mode): game_started when the server starts, player_died
+-- when a streamer dies (OnPlayerDeath does not exist on a server: read every second).
+-- Runs on the server and in single player only (single player only uses "tags" and the local
+-- effects: its F8 window reads the bridge's files itself).
 
 if isClient() then return end
 
 require "Talky/Talky_Config"
+require "Talky/Talky_Json"
 require "Talky/Talky_Net"
 require "Talky/Talky_Actions"
+require "Talky/Talky_Files"
+require "Talky/Talky_Streamers"
 require "Talky/Talky_Tags"
 require "Talky/Talky_ServerRunner"
+require "Talky/Talky_Inbox"
 
 Talky_Server = {
     buckets = {},     -- [key] = { tokens, at }   5 commands/s, burst 10
-    seen = {},        -- [key] = { [id] = expiresAt }   jobs already accepted
-    jobTimes = {},    -- [key] = { t }   jobs accepted in the last minute
-    helloAt = {},     -- [key] = last hello answered
-    deniedAt = {},    -- [key] = last refusal answered
     tagsAt = {},      -- [key] = last tags snapshot
-    lastPurge = 0,
-    allowedCache = { text = nil, set = {} },
+    statusCache = nil,
+    statusReadAt = nil,
+    configText = nil,
+    configData = nil,
+    lastDead = {},    -- [streamer key] = true while dead (player_died once per death)
+    deathCheckAt = nil,
 }
 
 local S = Talky_Server
-local PERMANENT = { not_allowed = true, invalid = true, duplicate = true, unknown_action = true, disabled = true, expired = true }
-Talky_Server.PERMANENT = PERMANENT
 
----------------------------------------------------------------- logs
-
--- One console line per player and reason per minute, at most 10 lines per player per minute
--- (shared with the job runner: TalkyNet.logLimited).
+-- Console lines about one player: TalkyNet.logLimited (one per reason a minute, 10 a minute).
 function Talky_Server.logFor(key, reason, msg)
     TalkyNet.logLimited(key, reason, msg)
 end
 
 ---------------------------------------------------------------- permission
 
--- Talky.AllowedPlayers: names separated by ',' or ';' (both refused in usernames), each one
--- trimmed. A space is part of a name ("Big Boss" is one username): splitting on it would let
--- anyone create the account "big" and pass.
-local function allowedSet(text)
-    local c = S.allowedCache
-    if c.text ~= text then
-        c.text, c.set = text, {}
-        for entry in string.gmatch(text or "", "[^,;]+") do
-            local name = string.match(entry, "^%s*(.-)%s*$")
-            if name and name ~= "" then c.set[TalkyNet.nameKey(name)] = true end
-        end
-    end
-    return c.set
-end
-
--- May this player use Talky? Never isAdmin/isCoopHost/hasAdminPower (wrong or client-only
--- on a server), never a name taken from the args.
-function Talky_Server.isAllowed(player)
+-- May this player manage Talky on this server (streamers, workflows, Test now)? The role's
+-- CreateHorde capability (admin and moderator by default). Never isAdmin, isCoopHost or
+-- hasAdminPower (wrong or client-only on a server), never a name taken from the args.
+-- Single player: always.
+function Talky_Server.isAdmin(player)
     local mode = TalkyNet.mode()
     if mode == "sp" then return true end
     if mode ~= "server" or not player then return false end
-    local sv = Talky_Config.readSandbox()
-    local key = TalkyNet.userKey(player)
-    if key ~= "" and allowedSet(sv.AllowedPlayers)[key] then return true end
-    if sv.AllowAdmins then
-        local ok, res = pcall(function()
-            local role = player:getRole()
-            return role ~= nil and role:hasCapability(Capability.CreateHorde)
-        end)
-        if ok and res == true then return true end
-    end
-    return false
+    local ok, res = pcall(function()
+        local role = player:getRole()
+        return role ~= nil and role:hasCapability(Capability.CreateHorde)
+    end)
+    return ok and res == true
 end
 
 ---------------------------------------------------------------- rate limit
@@ -101,224 +82,67 @@ local function takeToken(key, t)
     return true
 end
 
-local function recentJobs(key, t)
-    local keep = {}
-    for _, at in ipairs(S.jobTimes[key] or {}) do
-        if t - at < 60000 and at <= t then keep[#keep + 1] = at end
-    end
-    S.jobTimes[key] = keep
-    return keep
+---------------------------------------------------------------- bridge status
+
+-- talky_status.json of the bridge, read at most once a second: { alive, ...fields }.
+function Talky_Server.bridgeStatus()
+    local t = getTimestampMs()
+    if S.statusCache and S.statusReadAt and t - S.statusReadAt < 1000 and t >= S.statusReadAt then return S.statusCache end
+    S.statusReadAt = t
+    local text = Talky_Files.readText(Talky_Config.statusFile)
+    local st = text and TalkyJson.tryDecode(text)
+    if type(st) ~= "table" then st = {} end
+    local ts = TalkyNet.num(st.ts, 0, 0, 1e15)
+    st.alive = ts > 0 and t - ts < 6000 and t - ts > -60000
+    S.statusCache = st
+    return st
 end
 
--- Drops old dedup entries and idle per-player state, once a minute.
-local function purge(t)
-    if t - S.lastPurge < 60000 and t >= S.lastPurge then return end
-    S.lastPurge = t
-    for key, ids in pairs(S.seen) do
-        local alive = false
-        for id, untilMs in pairs(ids) do
-            if untilMs < t then ids[id] = nil else alive = true end
-        end
-        if not alive then S.seen[key] = nil end
-    end
-    for key, b in pairs(S.buckets) do
-        if t - b.at > 60000 then S.buckets[key] = nil end
-    end
-end
-
----------------------------------------------------------------- validation
-
-local function readId(raw)
-    local id = TalkyNet.str(raw.id, 64, nil)
-    if id and not string.match(id, "^[%w:%._%-]+$") then id = nil end
-    return id
-end
-
--- Clean copy of the steps of a job. Returns steps, truncated, refused = { { action, code } }.
-local function sanitizeSteps(rawSteps, caps)
-    local steps, refused = {}, {}
-    local n = #rawSteps
-    local cap = caps.maxStepsPerJob
-    local truncated = 0
-    if n > cap then truncated = n - cap; n = cap end
-    local waitLeft = caps.maxWaitPerJobMs
-    for i = 1, n do
-        local step, code, action = Talky_Actions.sanitizeStep(rawSteps[i], i, caps)
-        if step then
-            if step.action == "wait" then
-                local ms = math.min(Talky_Actions.waitMs(step), waitLeft)
-                waitLeft = waitLeft - ms
-                step.seconds = ms / 1000
+-- The last events of the bridge, as plain short data (admins only).
+local function recentOf(st)
+    local out = {}
+    if type(st.recent) ~= "table" then return out end
+    for i = 1, math.min(#st.recent, 15) do
+        local e = st.recent[i]
+        if type(e) == "table" then
+            local c = {}
+            for _, k in ipairs({ "at", "source", "workflow", "user", "streamer", "skipped", "error", "rejected" }) do
+                c[k] = TalkyNet.str(e[k], 120, nil)
             end
-            steps[#steps + 1] = step
-        else
-            refused[#refused + 1] = { action = action, code = code }
+            c.job = TalkyNet.seq(e.job)
+            out[#out + 1] = c
         end
     end
-    return steps, truncated, refused
-end
-
--- action_failed for the steps refused at acceptance. Called once the answer for the job is
--- final (accepted, or refused for good), never before a busy or rate_limited answer: the job
--- comes back, and the same lines would be written at every try. On a server each (action,
--- code) is reported once per job, 20 lines per job at most (one "jobs" message must not turn
--- into hundreds of packets); single player reports every refused step, as 0.3.0.
-local MAX_REFUSED_REPORTS = 20
-local function reportRefused(player, seq, refused, caps)
-    local said, n = {}, 0
-    for _, r in ipairs(refused) do
-        local k = tostring(r.action) .. ":" .. tostring(r.code)
-        if not caps.enforce or not said[k] then
-            said[k] = true
-            n = n + 1
-            if caps.enforce and n > MAX_REFUSED_REPORTS then return end
-            TalkyNet.toClient(player, "emit", { event = "action_failed", data = { seq = seq, action = r.action, code = r.code } })
-        end
-    end
-end
-
--- One job of a "jobs" message. Returns the ack entry, or nil when there is nothing the
--- client could match it with (no readable seq nor id).
-function Talky_Server.acceptJob(player, key, raw, v, t, caps)
-    if type(raw) ~= "table" then return nil end
-    local seq = TalkyNet.seq(raw.seq)
-    local id = readId(raw)
-    if not seq and not id then return nil end
-    local ack = { seq = seq, id = id }
-    if not seq or v ~= Talky_Config.protocolVersion or type(raw.steps) ~= "table" then
-        ack.ok, ack.reason = false, "invalid"
-        return ack
-    end
-    id = id or tostring(seq)
-    ack.id = id
-    local seen = S.seen[key]
-    if seen and seen[id] then
-        ack.ok, ack.reason = false, "duplicate"
-        return ack
-    end
-    local age = TalkyNet.num(raw.age_ms, 0, 0, Talky_Config.maxJobTtlMs)
-    local ttl = TalkyNet.num(raw.ttl_ms, Talky_Config.maxJobTtlMs, 0, Talky_Config.maxJobTtlMs)
-    local life = math.min(ttl, Talky_Config.maxJobTtlMs - age)
-    if life <= 0 then
-        ack.ok, ack.reason = false, "expired"
-        return ack
-    end
-    -- transient answers before anything is reported: a rate_limited job is sent again
-    if caps.maxJobsPerMinute then
-        local recent = recentJobs(key, t)
-        if #recent >= caps.maxJobsPerMinute then
-            ack.ok, ack.reason = false, "rate_limited"
-            ack.retry_ms = math.max(1000, 60000 - (t - recent[1]) + 100)
-            return ack
-        end
-    end
-    local steps, truncated, refused = sanitizeSteps(raw.steps, caps)
-    -- On a server a job whose steps are all refused is refused for good, and counts in the
-    -- per-minute window too (a flood of such jobs ends up rate_limited). Single player runs it
-    -- like 0.3.0: action_failed for each step, then job_done.
-    if caps.enforce and #steps == 0 and #refused > 0 then
-        if caps.maxJobsPerMinute then
-            local list = S.jobTimes[key] or {}
-            list[#list + 1] = t
-            S.jobTimes[key] = list
-        end
-        reportRefused(player, seq, refused, caps)
-        ack.ok, ack.reason = false, refused[1].code == "disabled" and "disabled" or (refused[1].code == "unknown_action" and "unknown_action" or "invalid")
-        return ack
-    end
-    if not Talky_ServerRunner.canQueue(key, caps) then
-        ack.ok, ack.reason, ack.retry_ms = false, "busy", 5000
-        return ack
-    end
-    Talky_ServerRunner.enqueue(key, TalkyNet.username(player), {
-        seq = seq, id = id,
-        workflow = TalkyNet.str(raw.workflow, 64, ""),
-        user = TalkyNet.str(raw.user, 64, ""),
-        steps = steps,
-        receivedAt = t,
-        deadline = t + life,
-    })
-    seen = seen or {}
-    seen[id] = t + ttl + 60000
-    S.seen[key] = seen
-    if caps.maxJobsPerMinute then
-        local list = S.jobTimes[key] or {}
-        list[#list + 1] = t
-        S.jobTimes[key] = list
-    end
-    -- accepted: reported once (a resend now gets "duplicate" before reaching this point)
-    reportRefused(player, seq, refused, caps)
-    ack.ok = true
-    if truncated > 0 then ack.truncated = truncated end
-    return ack
+    return out
 end
 
 ---------------------------------------------------------------- commands
 
 local commands = {}
 
-commands.hello = function(player, key, args, t)
-    local mode = TalkyNet.mode()
-    local v = type(args) == "table" and TalkyNet.num(args.v, 0, 0, 1000000) or 0
-    local allowed = Talky_Server.isAllowed(player)
-    if mode == "server" then
-        if S.helloAt[key] and t - S.helloAt[key] < 5000 and t >= S.helloAt[key] then return end
-        if not allowed and S.deniedAt[key] and t - S.deniedAt[key] < 30000 and t >= S.deniedAt[key] then return end
+commands.status = function(player, key, args, t)
+    local admin = S.isAdmin(player)
+    local st = S.bridgeStatus()
+    local reply = {
+        mode = TalkyNet.mode(),
+        version = Talky_Config.version,
+        admin = admin,
+        streamer = Talky_Streamers.isStreamer(player),
+        caps = Talky_Config.publicCaps(),
+        bridge = {
+            alive = st.alive == true,
+            version = TalkyNet.str(st.version, 16, ""),
+            mode = TalkyNet.str(st.mode, 16, ""),
+            protocol = TalkyNet.int(st.protocol, 1, 0, 1000000),
+            port = TalkyNet.int(st.port, 7420, 1, 65535),
+        },
+    }
+    if admin then
+        reply.bridge.publicUrl = TalkyNet.str(st.publicUrl, 200, "")
+        reply.bridge.pending = TalkyNet.int(st.pending, 0, 0, 1000000)
+        reply.recent = recentOf(st)
     end
-    S.helloAt[key] = t
-    local reply = { v = Talky_Config.protocolVersion, server = Talky_Config.version, mode = mode,
-                    caps = Talky_Config.publicCaps() }
-    if v ~= Talky_Config.protocolVersion then
-        reply.allowed, reply.reason = false, "version"
-        S.logFor(key, "version", "protocol " .. tostring(v) .. " instead of " .. Talky_Config.protocolVersion .. ": update Talky")
-    elseif allowed then
-        reply.allowed = true
-    else
-        reply.allowed, reply.reason = false, "not_allowed"
-        S.deniedAt[key] = t
-    end
-    TalkyNet.toClient(player, "helloAck", reply)
-end
-
-commands.jobs = function(player, key, args, t)
-    if type(args) ~= "table" or type(args.list) ~= "table" then return end
-    local list = args.list
-    local n = math.min(#list, Talky_Config.jobsPerBatch)
-    local v = TalkyNet.num(args.v, 0, 0, 1000000)
-    local acks = {}
-    if not Talky_Server.isAllowed(player) then
-        if S.deniedAt[key] and t - S.deniedAt[key] < 30000 and t >= S.deniedAt[key] then return end
-        S.deniedAt[key] = t
-        for i = 1, n do
-            local raw = list[i]
-            if type(raw) == "table" then
-                local seq, id = TalkyNet.seq(raw.seq), readId(raw)
-                if seq or id then acks[#acks + 1] = { seq = seq, id = id, ok = false, reason = "not_allowed" } end
-            end
-        end
-        S.logFor(key, "not_allowed", "jobs refused: not allowed (Talky.AllowedPlayers / AllowAdmins)")
-    else
-        local caps = Talky_Config.caps()
-        for i = 1, n do
-            local raw = list[i]
-            local ok, ack = pcall(Talky_Server.acceptJob, player, key, raw, v, t, caps)
-            if not ok then
-                S.logFor(key, "error", "job refused, error: " .. tostring(ack))
-                ack = nil
-                if type(raw) == "table" then
-                    local seq, id = TalkyNet.seq(raw.seq), readId(raw)
-                    if seq or id then ack = { seq = seq, id = id, ok = false, reason = "invalid" } end
-                end
-            end
-            if ack then
-                if not ack.ok and ack.reason ~= "duplicate" then
-                    S.logFor(key, ack.reason, "job " .. tostring(ack.seq) .. " refused: " .. tostring(ack.reason))
-                end
-                acks[#acks + 1] = ack
-            end
-        end
-    end
-    if #acks > 0 then TalkyNet.toClient(player, "jobAcks", { list = acks }) end
+    TalkyNet.toClient(player, "status", reply)
 end
 
 commands.tags = function(player, key, args, t)
@@ -326,6 +150,120 @@ commands.tags = function(player, key, args, t)
     if S.tagsAt[key] and t - S.tagsAt[key] < 10000 and t >= S.tagsAt[key] then return end
     S.tagsAt[key] = t
     Talky_Tags.sendSnapshot(player)
+end
+
+local function refuse(player, what)
+    TalkyNet.toClient(player, "refused", { what = what, reason = "not_admin" })
+end
+
+commands.streamers = function(player, key, args, t)
+    if not S.isAdmin(player) then return refuse(player, "streamers") end
+    local list = {}
+    for _, e in ipairs(Talky_Streamers.all()) do
+        list[#list + 1] = { name = e.name, token = e.token, online = TalkyNet.findPlayer(e.name) ~= nil }
+    end
+    local st = S.bridgeStatus()
+    TalkyNet.toClient(player, "streamers", {
+        list = list,
+        rev = Talky_Streamers.rev,
+        port = TalkyNet.int(st.port, 7420, 1, 65535),
+        publicUrl = TalkyNet.str(st.publicUrl, 200, ""),
+        bridge = st.alive == true and TalkyNet.str(st.mode, 16, "") == "server",
+    })
+end
+
+local OPS = { add = "streamer_add", remove = "streamer_remove", token = "streamer_token" }
+
+commands.streamer = function(player, key, args, t)
+    if not S.isAdmin(player) then return refuse(player, "streamer") end
+    args = type(args) == "table" and args or {}
+    local op = TalkyNet.str(args.op, 8, "")
+    local event = OPS[op]
+    local name = Talky_Streamers.cleanName(args.name)
+    local reply = { op = op, name = name, ok = false }
+    local current = name and Talky_Streamers.find(name)
+    if not event or not name then
+        reply.reason = "invalid"
+    elseif op == "add" and current then
+        reply.reason = "exists"
+    elseif op == "add" and #Talky_Streamers.all() >= Talky_Config.maxStreamers then
+        reply.reason = "full"
+    elseif op ~= "add" and not current then
+        reply.reason = "unknown"
+    elseif Talky_Files.event(event, { name = current and current.name or name, by = TalkyNet.username(player) }) then
+        reply.ok = true
+        S.logFor(key, "streamer:" .. op, "streamer " .. op .. " asked for " .. tostring(name))
+    else
+        reply.reason = "error"
+    end
+    TalkyNet.toClient(player, "streamerAck", reply)
+end
+
+-- talky_config.json as a table (cached by its text), or nil and a reason.
+local function readConfig()
+    local text = Talky_Files.readText(Talky_Config.configFile)
+    if not text or text == "" then return {} end
+    if text ~= S.configText then
+        local data = TalkyJson.tryDecode(text)
+        if type(data) ~= "table" then return nil, "unreadable" end
+        S.configText, S.configData = text, data
+    end
+    return S.configData
+end
+
+local CONFIG_KEYS = { "webhooks", "workflows", "gameEvents", "publicUrl", "settings" }
+
+commands.config = function(player, key, args, t)
+    if not S.isAdmin(player) then return refuse(player, "config") end
+    local data, err = readConfig()
+    if not data then return TalkyNet.toClient(player, "config", { error = err }) end
+    local out = {}
+    for _, k in ipairs(CONFIG_KEYS) do out[k] = data[k] end
+    if not TalkyNet.fits({ data = out }) then return TalkyNet.toClient(player, "config", { error = "too_large" }) end
+    TalkyNet.toClient(player, "config", { data = out, ok = true })
+end
+
+-- The F8 window of an admin saves the five fields it edits; the other keys of the file stay.
+commands.saveConfig = function(player, key, args, t)
+    if not S.isAdmin(player) then return refuse(player, "saveConfig") end
+    local sent = type(args) == "table" and type(args.data) == "table" and TalkyNet.copy(args.data, 40) or nil
+    if not sent then return TalkyNet.toClient(player, "configSaved", { ok = false, error = "invalid" }) end
+    local current = readConfig() or {}
+    local merged = {}
+    for k, v in pairs(current) do merged[k] = v end
+    for _, k in ipairs(CONFIG_KEYS) do
+        local v = sent[k]
+        if k == "publicUrl" then
+            merged[k] = TalkyNet.str(v, 200, "")
+        elseif type(v) == "table" then
+            merged[k] = v
+        elseif v == nil and (k == "webhooks" or k == "workflows" or k == "gameEvents") then
+            -- an empty table arrives as nil
+            merged[k] = {}
+        end
+    end
+    local ok = Talky_Files.write(Talky_Config.configFile, TalkyJson.encode(merged, "  "), false)
+    if ok then
+        S.configText, S.configData = nil, nil
+        S.logFor(key, "saveConfig", "talky_config.json saved by " .. TalkyNet.username(player))
+    end
+    TalkyNet.toClient(player, "configSaved", { ok = ok, error = not ok and "error" or nil })
+end
+
+-- Test now from the F8 window of an admin: the bridge runs the workflow for that admin (the
+-- test code of talky_status.json proves the line comes from this server code).
+commands.test = function(player, key, args, t)
+    if not S.isAdmin(player) then return refuse(player, "test") end
+    args = type(args) == "table" and args or {}
+    local workflow = TalkyNet.str(args.workflow, 64, nil)
+    local st = S.bridgeStatus()
+    local nonce = TalkyNet.str(st.testNonce, 128, nil)
+    if not workflow or workflow == "" then return TalkyNet.toClient(player, "testAck", { ok = false, error = "invalid" }) end
+    if not st.alive then return TalkyNet.toClient(player, "testAck", { ok = false, error = "bridge_offline" }) end
+    local vars = type(args.vars) == "table" and TalkyNet.copy(args.vars, 4) or {}
+    if not TalkyNet.fits(vars) or TalkyNet.netSize(vars) > 4096 then vars = {} end
+    local ok = Talky_Files.event("test_workflow", { workflow = workflow, vars = vars, nonce = nonce, streamer = TalkyNet.username(player) })
+    TalkyNet.toClient(player, "testAck", { ok = ok, workflow = workflow })
 end
 
 Talky_Server.commands = commands
@@ -343,7 +281,6 @@ function Talky_Server.onCommand(command, player, args)
     if mode == "server" and not takeToken(key, t) then return end
     local handler = commands[command]
     if not handler then return end
-    purge(t)
     local ok, err = pcall(handler, player, key, args, t)
     if not ok then S.logFor(key, "error", tostring(command) .. " failed: " .. tostring(err)) end
 end
@@ -355,8 +292,45 @@ Events.OnClientCommand.Add(function(module, command, player, args)
     Talky_Server.onCommand(command, player, args)
 end)
 
+---------------------------------------------------------------- game events (server mode)
+
+-- A streamer who dies: player_died { streamer, hoursSurvived, zombieKills }, once per death.
+function Talky_Server.checkDeaths()
+    if TalkyNet.mode() ~= "server" then return end
+    local t = getTimestampMs()
+    if S.deathCheckAt and t - S.deathCheckAt < 1000 and t >= S.deathCheckAt then return end
+    S.deathCheckAt = t
+    local seen = {}
+    for _, e in ipairs(Talky_Streamers.all()) do
+        local p = TalkyNet.findPlayer(e.name)
+        local dead = false
+        if p then
+            local ok, d = pcall(function() return p:isDead() end)
+            dead = ok and d == true
+        end
+        if dead and not S.lastDead[e.key] then
+            local hours, kills = 0, 0
+            pcall(function() hours = math.floor(p:getHoursSurvived()) end)
+            pcall(function() kills = p:getZombieKills() end)
+            Talky_Files.streamerEvent("player_died", {
+                hoursSurvived = TalkyNet.int(hours, 0, 0, 1e9), zombieKills = TalkyNet.int(kills, 0, 0, 1e9),
+            }, e.name)
+        end
+        if dead then seen[e.key] = true end
+    end
+    S.lastDead = seen
+end
+
+Events.OnTick.Add(function()
+    local ok, err = pcall(Talky_Server.checkDeaths)
+    if not ok then TalkyNet.log("death check: " .. tostring(err)) end
+end)
+
 Events.OnServerStarted.Add(function()
-    TalkyNet.log("server ready (Talky " .. Talky_Config.version .. ", protocol " .. Talky_Config.protocolVersion .. ")")
+    TalkyNet.log("server ready (Talky " .. Talky_Config.version .. ")")
+    local server = ""
+    pcall(function() server = TalkyNet.str(getServerName(), 64, "") or "" end)
+    Talky_Files.event("game_started", { mode = "server", host = false, server = server })
 end)
 
 return Talky_Server

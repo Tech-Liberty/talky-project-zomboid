@@ -2,18 +2,23 @@
 -- those changes are saved in talky_config.json and applied over these values.
 -- On a multiplayer server the limits come from the sandbox options instead (see "sandbox"
 -- below and media/sandbox-options.txt): talky_config.json only applies in single player.
+-- Two modes: single player (the bridge on the player's PC, next to the game) and server (the
+-- bridge on the machine of the server, which reads its jobs itself; see Talky_Inbox).
 
 Talky_Config = {
-    version         = "0.4.0",
-    protocolVersion = 1,   -- messages between the game client and the Talky server code
+    version         = "0.5.0",
+    bridgeProtocol  = 3,   -- talky_status.json "protocol" of a bridge that knows server mode (0.5.0)
 
-    -- Files exchanged with the bridge, relative to <user>/Zomboid/Lua/
-    inboxFile  = "talky_inbox.jsonl",   -- bridge -> game (jobs)
-    ackFile    = "talky_ack.txt",       -- game -> bridge ("S" or "S s1 s2 ...", see Talky_Bridge)
-    outboxFile = "talky_outbox.txt",    -- game -> bridge (game events). The game only lets mods
-                                        -- write .ini/.cfg/.txt/.log/.json files.
+    -- Files exchanged with the bridge, relative to Zomboid/Lua/ of the game, or of the server
+    -- in multiplayer (the account that runs it, or its -cachedir)
+    inboxFile  = "talky_inbox.jsonl",   -- bridge -> game (jobs; server mode: "target" = streamer)
+    ackFile    = "talky_ack.txt",       -- game -> bridge ("S" or "S s1 s2 ...", see Talky_Inbox)
+    outboxFile = "talky_outbox.txt",    -- game -> bridge (game events, streamer requests). The game
+                                        -- only lets mods write .ini/.cfg/.txt/.log/.json files.
     configFile = "talky_config.json",   -- webhooks + workflows + settings, edited by the window, read by the bridge
     statusFile = "talky_status.json",   -- bridge -> game heartbeat
+    streamersFile = "talky_streamers.json", -- bridge -> server: the streamers and their tokens (server mode)
+    clientFile = "talky_client.json",   -- multiplayer: this player's display settings (names, banners)
 
     pollIntervalMs = 1000,
 
@@ -28,10 +33,11 @@ Talky_Config = {
     maxToastSeconds = 60,    -- longest banner
     maxNameLength   = 40,    -- name above a zombie
     maxQueuedJobs   = 200,   -- single player: jobs waiting for a free slot
+    maxStreamers    = 200,   -- server mode (the bridge keeps as many)
+    maxStreamerName = 64,
 
     -- Fixed limits of the Talky server code (multiplayer)
-    jobsPerBatch        = 10,      -- jobs per "jobs" message
-    maxJobTtlMs         = 900000,  -- a job not started 15 min after the bridge created it is dropped (age_ms)
+    maxJobTtlMs         = 900000,  -- a job not started 15 min after the bridge created it is dropped
     maxWaitPerJobMs     = 900000,  -- total of the "wait" steps of one job
     maxQueuedJobsTotal  = 50,      -- every player together
     maxActiveJobsTotal  = 12,
@@ -80,10 +86,9 @@ Talky_Config.editable = {
 ---------------------------------------------------------------- sandbox options (server)
 
 -- SandboxVars.Talky.<name>, declared in media/sandbox-options.txt with the same bounds.
--- A save made before 0.4.0 has no Talky options: the defaults below apply.
+-- A save made before 0.4.0 has no Talky options: the defaults below apply. Who may use Talky is
+-- not an option: the streamers an admin added (F8 > Webhooks, talky_streamers.json).
 Talky_Config.sandbox = {
-    { name = "AllowedPlayers",            type = "string", default = "" },
-    { name = "AllowAdmins",               type = "bool",   default = true },
     { name = "MaxZombiesPerAction",       type = "int",    default = 30,   min = 1,  max = 300 },
     { name = "MaxZombiesPerJob",          type = "int",    default = 60,   min = 1,  max = 500 },
     { name = "MaxZombiesPer10Min",        type = "int",    default = 150,  min = 1,  max = 2000 },
@@ -222,7 +227,7 @@ function Talky_Config.categoryAllowed(category, caps)
     return caps.sandbox[toggle] == true
 end
 
--- Limits sent to the client in helloAck, shown read only on the F8 window (plain data).
+-- Limits sent to the client in the "status" answer, shown read only on the F8 window (plain data).
 function Talky_Config.publicCaps()
     local c = Talky_Config.caps()
     local allow = {}

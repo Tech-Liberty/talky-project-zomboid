@@ -10,6 +10,7 @@ if isClient() then return end
 
 require "Talky/Talky_Config"
 require "Talky/Talky_Net"
+require "Talky/Talky_Files"
 
 Talky_Tags = {
     live = {},       -- [tostring(onlineID)] = { z, name, color, owner, ownerKey, p, t }
@@ -116,13 +117,14 @@ end
 
 ---------------------------------------------------------------- deaths
 
--- zombie_killed for the bridge of the owner, and the banner (owner, or everyone with
--- Talky.BannerAudience = 2, within the banner budget of notify steps: 6 a minute per streamer,
--- 20 in all; beyond, to the owner only). Nothing when the owner is offline.
--- Talky_ServerRunner is read at call time: it requires this file, a require here would loop.
+-- zombie_killed for the bridge (server mode: with the streamer whose job spawned it, online
+-- or not), and the banner (owner, or everyone with Talky.BannerAudience = 2, within the banner
+-- budget of notify steps: 6 a minute per streamer, 20 in all; beyond, to the owner only), when
+-- the owner is online. Talky_ServerRunner is read at call time: it requires this file, a
+-- require here would loop.
 local function killed(owner, ownerName, ownerKey, name, byPlayer)
+    Talky_Files.streamerEvent("zombie_killed", { name = name, byPlayer = byPlayer == true }, ownerName)
     if not owner then return end
-    TalkyNet.toClient(owner, "emit", { event = "zombie_killed", data = { name = name, byPlayer = byPlayer == true } })
     local fx = { kind = "notify", tkey = "Toast_ZombieDown", arg = name, color = "#ff5555" }
     local caps = Talky_Config.caps()
     local R = Talky_ServerRunner

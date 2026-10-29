@@ -1,21 +1,5 @@
 VERSION = 1,
 
-option Talky.AllowedPlayers
-{
-	type = string,
-	default = ,
-	page = Talky,
-	translation = Talky_AllowedPlayers,
-}
-
-option Talky.AllowAdmins
-{
-	type = boolean,
-	default = true,
-	page = Talky,
-	translation = Talky_AllowAdmins,
-}
-
 option Talky.MaxZombiesPerAction
 {
 	type = integer,

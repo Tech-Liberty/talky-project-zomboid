@@ -15,7 +15,9 @@
 -- the world, and so on.
 -- What the real game would silently ignore, or what Talky must never call, goes to P.misuse;
 -- NaN or infinite values reaching the world go to W.corrupt; errors raised in event handlers
--- go to P.errors; reads of globals that do not exist go to P.unknown. H.hygiene() checks them.
+-- go to P.errors; reads of globals that do not exist go to P.unknown; every file opened goes to
+-- P.io (the server and single player open Talky's own files only, a multiplayer client none of
+-- the bridge's). H.hygiene() checks them.
 -- Messages between processes go through H.net: copied by the game's own serializer
 -- (__netCopy), a top-level empty table arrives as nil, and they are delivered at the end of
 -- the tick, never inside the call that sent them.
@@ -1221,7 +1223,8 @@ function H.newSP(acc, opts)
     H.loadDir(P, "client")
     P.fire("OnGameBoot")
     if opts.beforeStart then opts.beforeStart(P) end
-    H.loadDir(P, "server")
+    -- noServer: the server/ files failed to load (a Lua error in another mod, say)
+    if not opts.noServer then H.loadDir(P, "server") end
     P.fire("OnInitGlobalModData", true)
     P.fire("OnGameStart")
     return P
@@ -1402,6 +1405,103 @@ end
 
 function H.clearOutbox(P) P.fs["talky_outbox.txt"] = nil end
 
+---------------------------------------------------------------- bridge side, server mode
+
+-- talky_status.json as a running bridge writes it (server mode unless opts.mode says otherwise).
+function H.bridgeUp(P, opts)
+    opts = opts or {}
+    P.fs["talky_status.json"] = H.JSON.encode({ ts = opts.ts or NOW, version = opts.version or "0.5.0", protocol = opts.protocol or 3,
+        mode = opts.mode or "server", testNonce = opts.nonce or "srv-nonce", port = opts.port or 7420, session = "0123456789abcdef",
+        publicUrl = opts.publicUrl or "", pending = opts.pending or 0, lastAck = 0, webhooks = { "follow" }, hookTokens = {},
+        streamers = #(P.streamers or {}), recent = opts.recent or {} })
+end
+
+-- Tokens as the bridge draws them: 48 hexadecimal characters, a new one each time.
+local tokenNo = 0
+function H.newToken()
+    tokenNo = tokenNo + 1
+    return "c0ffee" .. string.rep("0", 36) .. string.sub("000000" .. tostring(tokenNo), -6)
+end
+
+-- talky_streamers.json from P.streamers ({ { name, token } }), as bridge.js writes it.
+function H.writeStreamers(P)
+    P.streamersRev = (P.streamersRev or 0) + 1
+    local list = {}
+    for i, s in ipairs(P.streamers or {}) do list[i] = { name = s.name, token = s.token, createdAt = NOW } end
+    P.fs["talky_streamers.json"] = H.JSON.encode({ rev = P.streamersRev, streamers = list })
+end
+
+function H.setStreamers(P, names)
+    P.streamers = {}
+    for _, n in ipairs(names) do P.streamers[#P.streamers + 1] = { name = n, token = H.newToken() } end
+    H.writeStreamers(P)
+end
+
+function H.tokenOf(P, name)
+    for _, s in ipairs(P.streamers or {}) do
+        if string.lower(s.name) == string.lower(name) then return s.token end
+    end
+    return nil
+end
+
+-- What the bridge does with the streamer requests of the outbox (bridge.js streamerRequest):
+-- streamer_add / streamer_remove / streamer_token, then talky_streamers.json written again. The
+-- other lines stay. Returns the requests handled, as "op:name".
+function H.bridgeRequests(P)
+    local keep, done = {}, {}
+    for _, line in ipairs(H.splitLines(P.fs["talky_outbox.txt"] or "")) do
+        local e = line ~= "" and H.JSON.tryDecode(line)
+        local op = type(e) == "table" and type(e.event) == "string" and string.match(e.event, "^streamer_(%a+)$")
+        if op then
+            local name = e.data and e.data.name
+            P.streamers = P.streamers or {}
+            local found
+            for i, s in ipairs(P.streamers) do if string.lower(s.name) == string.lower(tostring(name)) then found = i end end
+            if op == "add" and not found then P.streamers[#P.streamers + 1] = { name = name, token = H.newToken() }
+            elseif op == "remove" and found then table.remove(P.streamers, found)
+            elseif op == "token" and found then P.streamers[found].token = H.newToken() end
+            done[#done + 1] = op .. ":" .. tostring(name)
+        elseif line ~= "" then
+            keep[#keep + 1] = line
+        end
+    end
+    P.fs["talky_outbox.txt"] = #keep > 0 and (table.concat(keep, "\n") .. "\n") or nil
+    if #done > 0 then H.writeStreamers(P) end
+    return done
+end
+
+-- Every message a client process receives from the server, with its args (tests read them).
+function H.recordDown(P)
+    P.down = {}
+    local dispatch = P.E.Talky_Client.dispatch
+    P.E.Talky_Client.dispatch = function(command, args)
+        P.down[#P.down + 1] = { command = command, args = args }
+        return dispatch(command, args)
+    end
+end
+
+-- The text of every value of a table (tokens in args, on screen...).
+function H.flatten(v, out, depth)
+    out = out or {}
+    depth = depth or 0
+    if type(v) == "table" and depth < 20 then
+        for k, x in pairs(v) do
+            out[#out + 1] = tostring(k)
+            H.flatten(x, out, depth + 1)
+        end
+    elseif v ~= nil then
+        out[#out + 1] = tostring(v)
+    end
+    return out
+end
+
+function H.contains(v, text)
+    for _, s in ipairs(H.flatten(v)) do
+        if string.find(s, text, 1, true) then return true end
+    end
+    return false
+end
+
 function H.logHas(P, pattern)
     for _, l in ipairs(P.log) do
         if string.find(l, pattern) then return true end
@@ -1475,8 +1575,19 @@ function H.hygiene(P, label)
     for _, m in ipairs(P.missingRequires) do missing[#missing + 1] = m end
     check(#missing == 0 and #P.badRequires == 0, label .. ": every require resolves, none of a client/ file on a server"
         .. ((#missing + #P.badRequires) > 0 and (" (" .. list(missing) .. list(P.badRequires) .. ")") or ""))
-    if P.kind == "server" then
-        check(#P.io == 0, label .. ": the server never opens a file in Zomboid/Lua" .. (#P.io > 0 and (" (" .. list(P.io) .. ")") or ""))
+    if P.kind == "server" or P.kind == "sp" then
+        local other = {}
+        for _, e in ipairs(P.io) do
+            if not string.match(e, "^%a+ talky_[%w_]+%.%a+$") then other[#other + 1] = e end
+        end
+        check(#other == 0, label .. ": only Talky's own files are opened in Zomboid/Lua" .. (#other > 0 and (" (" .. list(other) .. ")") or ""))
+    else
+        -- a client never touches the bridge's files: in a hosted game they are the server's
+        local bridgeFiles = {}
+        for _, e in ipairs(P.io) do
+            if not string.match(e, "^%a+ talky_client%.json$") then bridgeFiles[#bridgeFiles + 1] = e end
+        end
+        check(#bridgeFiles == 0, label .. ": a multiplayer client opens no file of the bridge" .. (#bridgeFiles > 0 and (" (" .. list(bridgeFiles) .. ")") or ""))
     end
     check(#P.refusedWrites == 0, label .. ": no file write refused by the game" .. (#P.refusedWrites > 0 and (" (" .. list(P.refusedWrites) .. ")") or ""))
 end

@@ -1,8 +1,8 @@
 -- Game action registry, shared by single player and the Talky server code (the job runner
 -- lives in server/Talky/Talky_ServerRunner.lua; in single player server/ files run too).
 -- Each handler receives (params, player, job, ctx):
---   player = the streamer's IsoPlayer (the sender of the job), job = { seq, id, workflow, user },
---   ctx    = { mode, caps, owner, now, reserve, refund, cooldown, broadcastOk, sayOk }
+--   player = the streamer's IsoPlayer (the target of the job), job = { seq, id, workflow, user },
+--   ctx    = { mode, caps, owner, now, reserve, refund, cooldown, broadcastOk, sayOk, emit }
 --            (see Talky_Actions.context).
 -- A handler returns nil when done, or a short code ("cooldown", "no_square"...) when it
 -- could not act; it raises an error only for bugs.
@@ -10,7 +10,8 @@
 -- Where each effect happens:
 --   world : here (server, or the single player game): zombies, items, weather...
 --   owner : on the streamer's own client (heal), sent with TalkyNet.toClient "fx"
---   ui    : on the client too (notify, say, halo, emit)
+--   ui    : on the client too (notify, say, halo); emit writes an event for the bridge here
+--           (ctx.emit: the outbox of the server, or of the single player game)
 --
 -- Add your own with Talky_Actions.register("name", function(p, player, job, ctx) ... end, opts).
 -- opts (optional) = { side = "world", category = "...", network = true, params = { key = "string"|"number"|"bool" } }.
@@ -82,8 +83,17 @@ function Talky_Actions.context(owner)
         cooldown = function() return true end,
         broadcastOk = function() return true end,
         sayOk = function() return true end,
+        emit = function() return false end,
     }
 end
+
+-- Events an emit step may not write: only the game itself writes them (test_workflow,
+-- game_started, player_died), they report a refusal (job_rejected, job_expired), or they ask
+-- the bridge to change the streamers of a server (streamer_*).
+Talky_Actions.RESERVED_EVENTS = {
+    test_workflow = true, game_started = true, player_died = true, job_rejected = true, job_expired = true,
+    streamer_add = true, streamer_remove = true, streamer_token = true,
+}
 
 -- Runs one step now. Raises an error when the action is unknown or fails (0.3.0 behaviour).
 function Talky_Actions.run(step, player, job, ctx)
@@ -144,6 +154,10 @@ function Talky_Actions.sanitizeStep(step, index, caps)
                 if t == "boolean" or t == "string" or t == "number" then v = bool(v, false) else v = nil end
             elseif spec.t == "c" then
                 v = color(v, nil)
+            elseif spec.t == "d" then
+                -- plain data (the event of an emit step): a copy, 8 levels and 8 KB at most
+                if type(v) == "table" then v = TalkyNet.copy(v, 8) or {} else v = nil end
+                if v ~= nil and TalkyNet.netSize(v) > 8192 then v = nil end
             else
                 v = nil
             end
@@ -295,11 +309,13 @@ builtin("halo", { side = "ui", params = { text = S(200) } }, function(p, player)
     TalkyNet.toClient(player, "fx", { kind = "halo", text = clipText(p.text) })
 end)
 
--- The client writes the event from its own copy of the job (it came from its inbox):
--- only the position of the step travels.
-builtin("emit", { side = "ui", params = {} }, function(p, player, job)
-    if not p._i or not job or not job.seq then return "invalid" end
-    TalkyNet.toClient(player, "emitStep", { seq = job.seq, id = job.id, index = p._i })
+-- An event for the bridge, written where the job runs (ctx.emit: the outbox next to the
+-- inbox the job came from). Server mode: with the streamer of the job.
+builtin("emit", { side = "ui", params = { event = S(64), data = { t = "d" } } }, function(p, player, job, ctx)
+    local event = str(p.event, 64, nil) or "custom"
+    if event == "" then event = "custom" end
+    if Talky_Actions.RESERVED_EVENTS[event] then return "invalid" end
+    if not ctx or not ctx.emit or not ctx.emit(event, type(p.data) == "table" and p.data or {}) then return "error" end
 end)
 
 builtin("wait", { side = "world", params = { seconds = N(0, 600) } }, function() end)
@@ -575,8 +591,9 @@ builtin("give_item", { side = "world", category = "items", params = { item = S(8
 end)
 
 -- Health is owned by the player's client in multiplayer: healed there.
-builtin("heal", { side = "owner", category = "playerEffects" }, function(p, player, job)
-    TalkyNet.toClient(player, "fx", { kind = "heal", seq = job and job.seq, id = job and job.id })
+builtin("heal", { side = "owner", category = "playerEffects" }, function(p, player)
+    if player:isDead() then return "dead" end
+    TalkyNet.toClient(player, "fx", { kind = "heal" })
 end)
 
 -- stat: stat = CharacterStat name (PANIC, STRESS, FATIGUE, HUNGER, THIRST, INTOXICATION...),

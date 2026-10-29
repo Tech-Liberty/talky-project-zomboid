@@ -4,7 +4,10 @@
 
 Talky connects [LibertyTalk](https://liberty-talk.com) to Project Zomboid. A follow, a sub, bits, a raid, a channel point redemption or a Super Chat on your stream runs a workflow in your game: a zombie named after the new follower, a horde sized by the raid, the helicopter for 1000 bits. The game sends its own events back ("a named zombie died", "the player died"), and they can run workflows too, including a call to LibertyTalk.
 
-Talky works in single player, in a hosted game and on a dedicated server. In multiplayer the server runs the effects, so every player sees them: see [Multiplayer](#multiplayer).
+Talky works in two modes:
+
+- **Single player**: the bridge runs on your PC, next to your game.
+- **Server** (dedicated, or a game hosted from the main menu): the admin runs the bridge on the machine of the server and adds the streamers in game. A streamer installs nothing but the mod, and pastes into their LibertyTalk widget the address and the token the admin gives them. See [Multiplayer](#multiplayer).
 
 ```
 LibertyTalk                       your PC
@@ -16,14 +19,14 @@ LibertyTalk                       your PC
 +--------------+            +--------------+            +-------------------+
 ```
 
-**Why a bridge?** The Lua of Project Zomboid (Kahlua) cannot open a network connection. It can only read and write files in `%USERPROFILE%\Zomboid\Lua\`. The bridge is a small Node.js program without dependencies: it receives the webhooks, runs the logic (conditions, random picks, cooldowns, templates) and writes jobs that the mod reads every second.
+**Why a bridge?** The Lua of Project Zomboid (Kahlua) cannot open a network connection. It can only read and write files in the `Zomboid\Lua\` folder of the game (or of the server). The bridge is a small Node.js program without dependencies: it receives the webhooks, runs the logic (conditions, random picks, cooldowns, templates) and writes jobs that the mod reads every second.
 
 ## Requirements
 
-- Windows 10 or 11, on the PC that runs the game and the bridge.
-- Project Zomboid Build 42.20.1 or later, in single player, as the host of a game, or on a dedicated server. On a server, Talky must be installed on the server too: see [Multiplayer](#multiplayer).
-- Node.js 18 or later: `winget install OpenJS.NodeJS.LTS`
-- cloudflared, for the public address of the bridge: `winget install --id Cloudflare.cloudflared`
+- Project Zomboid Build 42.20.1 or later.
+- Node.js 18 or later, on the machine that runs the bridge: `winget install OpenJS.NodeJS.LTS` on Windows, the package of your distribution (when it is 18 or later) or [nodejs.org](https://nodejs.org) on Linux.
+- Single player: Windows 10 or 11 on the PC that runs the game and the bridge, and cloudflared for the public address of the bridge: `winget install --id Cloudflare.cloudflared`.
+- Server: the machine of the server (Linux or Windows), reachable from the internet on one TCP port (7420 by default). See [Multiplayer](#multiplayer).
 - A LibertyTalk account with Twitch or YouTube connected.
 
 ## Install
@@ -33,27 +36,21 @@ There are two ways to get the mod. Use only one: two mods with the id `Talky` co
 **A. Mod from the Steam Workshop**
 
 1. Subscribe to Talky on the Steam Workshop.
-2. Download `Talky-0.4.0-windows.zip` from the [GitHub releases](https://github.com/Tech-Liberty/talky-project-zomboid/releases) and extract it to a folder you keep, for example `Documents\Talky`.
+2. Download `Talky-0.5.0.zip` from the [GitHub releases](https://github.com/Tech-Liberty/talky-project-zomboid/releases) and extract it to a folder you keep, for example `Documents\Talky`.
 3. Leave the `Talky` folder of the zip where it is: the Workshop already provides the mod, and the game does not read that folder outside `Zomboid\mods`.
 
 **B. Without the Steam Workshop**
 
-1. Download `Talky-0.4.0-windows.zip` and extract it to a folder you keep, as in A.
+1. Download `Talky-0.5.0.zip` and extract it to a folder you keep, as in A.
 2. Copy the `Talky` folder of the zip into `%USERPROFILE%\Zomboid\mods`, so that the game finds `%USERPROFILE%\Zomboid\mods\Talky\42\mod.info`. Copy only this folder: the bridge stays in `Documents\Talky`.
 
 Do not extract the zip into `Zomboid\mods`. With the Workshop, the `Talky` folder of the zip would be a second copy of the mod. In both cases, removing or replacing a mod there can delete the bridge and its `bridge\config.json`. The bridge prints a warning at startup in both situations.
 
-To check the download, compare `Get-FileHash Talky-0.4.0-windows.zip -Algorithm SHA256` with `SHA256SUMS.txt` of the release.
+To check the download, compare `Get-FileHash Talky-0.5.0.zip -Algorithm SHA256` (Windows) or `sha256sum Talky-0.5.0.zip` (Linux) with `SHA256SUMS.txt` of the release.
 
-**Updating from 0.3.0.** Replace the mod and the bridge at the same time, and keep `bridge\config.json` and `%USERPROFILE%\Zomboid\Lua\talky_config.json`. Since game version 42.20.1, mods may only write `.ini`, `.cfg`, `.txt`, `.log` and `.json` files. The game refused the `talky_outbox.jsonl` file of Talky 0.3.0, so no game event (`zombie_killed`, `player_died`, `game_started`, `job_done`, `action_failed`) and no **Test now** reached the bridge. Talky 0.4.0 writes `talky_outbox.txt`, which bridge 0.4.0 reads (it still reads the old file). **Test now** also needs both at 0.4.0: the bridge only runs a test that carries the test code it writes in `talky_status.json` at each start. With an older bridge, F8 > Status shows "Bridge older than 0.4.0".
+**Updating from 0.4.0.** Replace the mod and the bridge at the same time, on the server and on every PC. Keep `bridge\config.json` and `Zomboid\Lua\talky_config.json`. Single player works as before. Multiplayer changed completely: the bridge no longer runs on the streamer's PC, and the game of a streamer no longer relays jobs to the server. The admin runs one bridge in server mode next to the server and adds the streamers in F8 > Webhooks (see [Multiplayer](#multiplayer)); a streamer who used 0.4.0 on a server can stop their own bridge and tunnel, and pastes into the LibertyTalk widget the address and the token the admin gives them. The sandbox options **Allowed players** and **Admins and moderators may use Talky** are gone: the list of streamers of F8 > Webhooks replaces them. Coming from 0.3.0: read the 0.4.0 notes of the [CHANGELOG](CHANGELOG.md) too.
 
-What 0.4.0 changes for a 0.3.0 setup:
-
-- A dedicated webhook token typed in the F8 window of 0.3.0 is saved in `talky_config.json`, a file every game mod can read. Bridge 0.4.0 ignores it (a `warning:` line names the webhook) and that webhook takes the bridge token, so a LibertyTalk URL that carries the old dedicated token gets `401 bad token`. Move the token to `hookTokens` in `bridge\config.json` (see [Webhook URLs and tokens](#webhook-urls-and-tokens)) and restart the bridge.
-- An `http` step with `hmacSecret` written in `talky_config.json` is refused. Put the address and its secrets in `httpTargets` of `bridge\config.json` and name the target in the step (see [Sending a game event to LibertyTalk](#sending-a-game-event-to-libertytalk)). `headers` written in a step still work, with a warning.
-- `talky_status.json` no longer holds the token, and the **Copy URL** buttons of F8 became **Copy command**: they copy `node bridge\bridge.js url <webhook>`, which puts the full URL in the clipboard.
-
-## Start and test
+## Start and test (single player)
 
 1. Double-click `start-bridge.cmd` and keep its window open. On the first launch, you should see these lines, each one after the time:
    ```
@@ -61,13 +58,13 @@ What 0.4.0 changes for a 0.3.0 setup:
    the token is in your clipboard and in config.json, never shown here: paste it into "Bridge token" in the LibertyTalk widget
    created ~\Zomboid\Lua\talky_config.json from config.json
    config loaded: 10 webhook(s), 14 workflow(s)
-   Talky bridge 0.4.0 listening on http://127.0.0.1:7420
+   Talky bridge 0.5.0 listening on http://127.0.0.1:7420
    game folder: ~\Zomboid\Lua
    http steps allowed to: *.liberty-talk.com
      webhook  POST /hooks/follow
    ```
    The first three lines only show on the first launch. With a French Windows, they read `(language: fr)` and `from config.json (fr: 19 text(s) translated)`.
-2. In Project Zomboid: **Mods**, enable **Talky - LibertyTalk Live Events**, then start a solo game or load one (for a server, see [Multiplayer](#multiplayer)). Press **F8**. The Status page shows `Bridge connected on port 7420 - 0 job(s) waiting  (v0.4.0)`, then `Single player: the jobs run in this game.`
+2. In Project Zomboid: **Mods**, enable **Talky - LibertyTalk Live Events**, then start a solo game or load one. Press **F8**. The Status page shows `Bridge connected on port 7420 - 0 job(s) waiting  (v0.5.0)`, then `Single player: the jobs run in this game.`
 3. Test without LibertyTalk: on the **Workflows** page, select `new_follower`, type a name and click **Test now**. Or, in a terminal in the Talky folder:
    ```powershell
    node bridge\bridge.js fire new_follower user=Bob
@@ -83,9 +80,9 @@ What the first launch does:
 - For a game started with `-cachedir`, set `zomboidLuaDir` in `bridge\config.json` to the `Lua` folder of that location, then restart the bridge.
 - At every start, a `warning:` line shows when cloudflared is not in the PATH, when Talky is installed twice (in `Zomboid\mods\Talky` and from the Workshop), when the bridge folder is inside `Zomboid\mods`, or when `jobTtlSeconds` is above 900 or not a number (900 is then used). The bridge starts anyway.
 
-## Give the bridge a public address
+## Give the bridge a public address (single player)
 
-LibertyTalk refuses local and private addresses (protection against server-side request forgery), so the bridge needs a public HTTPS address. In a second window:
+LibertyTalk refuses local and private addresses (protection against server-side request forgery), so the bridge needs a public address. In a second window:
 
 ```powershell
 cloudflared tunnel --url http://127.0.0.1:7420
@@ -101,11 +98,13 @@ Paste the address in **F8 > Status > Public URL**, then **Save**: `node bridge\b
 2. In **My purchases**, click **Install** on the Project Zomboid · Talky card. LibertyTalk prepares the widget in your community, switched off. If the "Set up your workflow" assistant opens, you can leave it: this widget is set up on its own page.
 3. Open **Widgets**, then the **Project Zomboid · Talky** card. Keep the **Global** scope (selected by default): the widget then listens to every Twitch and YouTube account of the community.
 4. In the **Widget configuration** tab, fill in the two sections, then click **Save**:
-   - **Talky bridge connection**: **Talky bridge public URL** (`talky_bridge_url`), the tunnel address without a `/` at the end; **Bridge token** (`talky_token`), the `token` value of `bridge\config.json` (the one the bridge put in your clipboard on its first launch); **Chat command (without "!")** (`talky_command`), `zombie` by default.
+   - **Talky bridge connection**: **Talky bridge public URL** (`talky_bridge_url`) without a `/` at the end: in single player, the tunnel address; on a server, the address the admin gives you (`http://<public IP of the server>:7420`); **Bridge token** (`talky_token`): in single player, the `token` value of `bridge\config.json` (the one the bridge put in your clipboard on its first launch); on a server, your own token, from the admin; **Chat command (without "!")** (`talky_command`), `zombie` by default.
    - **Events sent to the game**: one box per event, from **Send follows** to **Send new YouTube members** (`talky_on_follow`, `talky_on_sub`, `talky_on_gift`, `talky_on_bits`, `talky_on_raid`, `talky_on_points`, `talky_on_command`, `talky_on_donation`, `talky_on_superchat`, `talky_on_member`), all ticked by default.
 5. In the **Activation** block, click **Activate**. The line changes to "Active on Global." and the **Listening to** block lists the accounts the widget listens to.
 
 `talky_token` is declared as a secret variable: LibertyTalk keeps it without showing it again and masks it in execution traces. To change it, type the new value and save.
+
+If LibertyTalk refuses an `http://` address with "Only the tunnel address, for example https://...", your LibertyTalk does not accept the address of a server bridge in clear text yet: give the bridge an `https://` address meanwhile (see [Ports and security](#ports-and-security)).
 
 For each event that is switched on, the widget sends `POST <talky_bridge_url>/hooks/<id>` with the `X-Bridge-Token` header:
 
@@ -131,15 +130,15 @@ Good to know:
 - When the tunnel address changes, update **Talky bridge public URL** in the widget configuration and click **Save**. The change applies right away, without deactivating the widget.
 - LibertyTalk waits 10 seconds for the bridge. A call to a stopped bridge can still show as completed in the LibertyTalk execution console: check the bridge window or **F8 > Status** first.
 
-**Without the widget**, build your own LibertyTalk workflow: a trigger from the table, then the action **Webhook / API call** with the URL `https://<tunnel>/hooks/<id>`, the method `POST`, the additional headers `{"X-Bridge-Token":"<token>"}` and a JSON body built like the "Fields sent" column, for example `{"user_name":"{user_name}","bits":"{bits}"}`. Leave "Sign the request" on No: that signature uses a key the bridge does not know. The token can also go in the URL (`?token=...`), but the header keeps it out of the URL. A webhook listed in `hookTokens` takes its own token instead of the bridge token.
+**Without the widget**, build your own LibertyTalk workflow: a trigger from the table, then the action **Webhook / API call** with the URL `<bridge address>/hooks/<id>`, the method `POST`, the additional headers `{"X-Bridge-Token":"<token>"}` and a JSON body built like the "Fields sent" column, for example `{"user_name":"{user_name}","bits":"{bits}"}`. Leave "Sign the request" on No: that signature uses a key the bridge does not know. The token can also go in the URL (`?token=...`), but the header keeps it out of the URL. In single player, a webhook listed in `hookTokens` takes its own token instead of the bridge token.
 
 ## Webhook URLs and tokens
 
-The game never knows the tokens: they stay in `bridge\config.json`, which the game cannot read. These commands run in a terminal opened in the Talky folder, whether the bridge runs or not:
+In single player, the game never knows the tokens: they stay in `bridge\config.json`, which the game cannot read. These commands run in a terminal opened in the Talky folder, whether the bridge runs or not:
 
-- `node bridge\bridge.js url <webhook>` puts the full URL of a webhook, `<public URL>/hooks/<webhook>?token=<its token>`, in the clipboard, and prints it with the token masked. The public URL is the one saved in F8 > Status; `--base https://<tunnel address>` gives another one. `--show` prints the full URL (not while the window is on stream). The **Copy command** buttons of F8 copy this command for the selected webhook.
-- `node bridge\bridge.js new-token` writes a new random token in `bridge\config.json`, the rest of the file unchanged, and puts it in the clipboard without printing it. Restart the bridge (the old token works until then), paste the new token into **Bridge token** of the LibertyTalk widget, and copy your webhook URLs again with `url`. The tokens of `hookTokens` do not change.
-- `hookTokens` in `bridge\config.json` gives a webhook its own token, 16 characters or more: `"hookTokens": { "follow": "<long random text>" }`. That webhook then refuses the bridge token. Restart the bridge after a change. F8 > Webhooks shows whether a webhook has a dedicated token, never the token.
+- `node bridge\bridge.js url <webhook>` puts the full URL of a webhook, `<public URL>/hooks/<webhook>?token=<its token>`, in the clipboard, and prints it with the token masked. The public URL is the one saved in F8 > Status; `--base https://<tunnel address>` gives another one. `--show` prints the full URL (not while the window is on stream). The **Copy command** buttons of F8 copy this command for the selected webhook. In server mode, add `--streamer <username>`: the URL carries the token of that streamer.
+- `node bridge\bridge.js new-token` writes a new random token in `bridge\config.json`, the rest of the file unchanged, and puts it in the clipboard without printing it. Restart the bridge (the old token works until then), paste the new token into **Bridge token** of the LibertyTalk widget, and copy your webhook URLs again with `url`. The tokens of `hookTokens` and of the streamers of a server do not change.
+- `hookTokens` in `bridge\config.json` gives a webhook its own token, 16 characters or more: `"hookTokens": { "follow": "<long random text>" }`. That webhook then refuses the bridge token. Restart the bridge after a change. F8 > Webhooks shows whether a webhook has a dedicated token, never the token. Single player only: in server mode, each streamer has their own token.
 
 From the `bridge` folder, where `start-bridge.cmd` starts the bridge, the same commands are `node bridge.js url <webhook>` and `node bridge.js new-token`, or `npm run url -- <webhook>` and `npm run new-token`.
 
@@ -147,44 +146,44 @@ From the `bridge` folder, where `start-bridge.cmd` starts the bridge, the same c
 
 The key can be changed in **Options > Keybinds > Talky**.
 
-| Page | Content |
-|---|---|
-| **Status** | Bridge connected or offline, bridge version (with a warning when the bridge is older than 0.4.0), single player or multiplayer, public URL of the tunnel, URL of each webhook with the token masked and a **Copy command** button (it copies `node bridge\bridge.js url <webhook>`; the game never copies a token), last events received by the bridge with the reason when one was skipped or refused. In multiplayer: the answer of the server (it runs your jobs, or it refuses them and why), its limits, the categories it turned off, the jobs without answer, the last refused job, and the **Allow me (host)** button for the host of a game. |
-| **Webhooks** | Create, rename or delete webhooks. Choose the workflow each one runs, or routes based on the content. Whether the webhook has a dedicated token (set in `hookTokens` of `bridge\config.json`), and **Copy command**. |
-| **Workflows** | Enable, cooldowns, chance, condition. Steps edited with one form per action (fields accept `{{user}}`), moved up or down, advanced steps in JSON (`if`, `random`, `repeat`). **Test now** with the name of your choice. |
-| **Game events** | Link "a named zombie dies", "the player dies" and "the game starts" to a workflow. |
-| **Settings** | Caps (zombies per action, workflows at the same time, spawn distance), names above zombies, banner duration and position, language of the bridge texts, name for anonymous events. In multiplayer, the three caps show the values of the server, read only (`30 (set by the server)`). |
+| Page | Single player | Multiplayer |
+|---|---|---|
+| **Status** | Bridge connected or offline, bridge version (with a warning when the bridge is older than 0.4.0), public URL of the tunnel, URL of each webhook with the token masked and a **Copy command** button (it copies `node bridge\bridge.js url <webhook>`; the game never copies a token), last events received by the bridge with the reason when one was skipped or refused. | Every player: the answer of the server, whether you are a streamer of this server, whether its bridge runs (and in server mode), its limits and the categories it turned off. Admins: the last events of the bridge. The host of a game who is not admin gets the **Allow me (host)** button. |
+| **Webhooks** | Create, rename or delete webhooks. Choose the workflow each one runs, or routes based on the content. Whether the webhook has a dedicated token (set in `hookTokens` of `bridge\config.json`), and **Copy command**. | Admins only. **Streamers** tab: the public address of the bridge, the streamers, **+ Add streamer**, and for the selected one the two values of their widget, **Show token**, **Copy URL and token**, **New token**, **Remove**. **Webhooks** tab: the webhooks of the server, as in single player. |
+| **Workflows** | Enable, cooldowns, chance, condition. Steps edited with one form per action (fields accept `{{user}}`), moved up or down, advanced steps in JSON (`if`, `random`, `repeat`). **Test now** with the name of your choice. | Admins only, the workflows of the server. **Test now** runs the workflow around your own character. |
+| **Game events** | Link "a named zombie dies", "the player dies" and "the game starts" to a workflow. | Admins only, the game events of the server. |
+| **Settings** | Caps (zombies per action, workflows at the same time, spawn distance), names above zombies, banner duration and position, language of the bridge texts, name for anonymous events. | The three caps show the values of the server, read only (`30 (set by the server)`). The names above zombies and the banners are your own settings (`Zomboid\Lua\talky_client.json` of your PC). Admins also set the language of the bridge texts and the name for anonymous events. |
 
-**Save** writes `Zomboid\Lua\talky_config.json`, which the bridge reloads without a restart. On its first launch, the bridge creates this file from `bridge\config.json`. If F8 > Save created it first, with no webhook and no workflow, the bridge adds the examples of `config.json` to it and keeps the public URL and the settings already saved. After that, `talky_config.json` holds the webhooks, workflows, game events, public URL and settings, and `bridge\config.json` keeps the port, the token, the dedicated webhook tokens (`hookTokens`), the http targets and their secrets (`httpTargets`), the allowed hosts and the poll mode. A newer `config.example.json` never changes an existing `talky_config.json`: to get the new examples, rename `talky_config.json` and restart the bridge.
+In single player, **Save** writes `Zomboid\Lua\talky_config.json`, which the bridge reloads without a restart. On its first launch, the bridge creates this file from `bridge\config.json`. If F8 > Save created it first, with no webhook and no workflow, the bridge adds the examples of `config.json` to it and keeps the public URL and the settings already saved. After that, `talky_config.json` holds the webhooks, workflows, game events, public URL and settings, and `bridge\config.json` keeps the mode, the port, the token, the dedicated webhook tokens (`hookTokens`), the http targets and their secrets (`httpTargets`), the allowed hosts and the poll mode. A newer `config.example.json` never changes an existing `talky_config.json`: to get the new examples, rename `talky_config.json` and restart the bridge.
+
+In multiplayer, the window of an admin loads the `talky_config.json` of the server and **Save** sends it back; the server writes it and the bridge reloads it. The other keys of the file stay as they are.
 
 ## Multiplayer
 
-Talky works in a hosted game (**Host** in the main menu) and on a dedicated server. Single player works as before.
+On a server, dedicated or hosted from the main menu, the bridge runs on the machine of the server. The streamers install nothing but the mod.
 
 ```
-streamer's PC                                              server
-+-----------+   files   +-----------------+   network   +-------------------+
-| bridge.js |---------->| Project Zomboid |------------>| Talky (server)    |
-|           |<----------| Talky (client)  |<------------| checks the jobs,  |
-+-----------+  ack and  +-----------------+ answers and | runs them         |
-                outbox                      effects     +-------------------+
+LibertyTalk                  machine of the server                              players
++-------------+  HTTP(S)  +----------------+   files   +---------------------+  network  +-----------+
+| widget of   |---------->| bridge.js      |---------->| Project Zomboid     |---------->| games     |
+| a streamer  | webhook + | --server       |   inbox   | server + Talky      |  effects, | + Talky   |
+| (their      | their     | 0.0.0.0:7420   |<----------| (reads the jobs,    |  names,   | (F8)      |
+|  token)     | token     |                | ack,      |  writes the events) |  F8       |           |
++-------------+           +----------------+ outbox    +---------------------+           +-----------+
 ```
 
-### What changes
+### How it works
 
-- The bridge and the tunnel stay on the streamer's PC, as in single player. Nothing changes on the server machine apart from the mod: no bridge, no tunnel, no port to open.
-- The streamer's game reads the jobs of its bridge and sends them to the server. The server checks who sent them, applies its limits, then runs them around the streamer's character.
-- World effects run on the server, so every player sees them: zombies and the names above them, items, vehicles, fire, weather, time of day, noise, sounds, helicopter.
-- Effects on a character only reach the streamer who sent the job: `heal` (it runs on the streamer's game), `stat`, `xp` and `give_item`. No step can target another player.
-- Banners (`notify`) show on the streamer's screen only, unless the server shows them to every player (option **Banners**). `say` goes through the "say" chat, so nearby players see it: 12 lines a minute per streamer and 60 for the whole server, beyond which the line only shows above the character. `halo` shows on the streamer's screen.
-- Game events (`zombie_killed`, `job_done`, `action_failed`...) go back to the game of the streamer who sent the job, which writes them for its own bridge. `player_died` and `game_started` come from the streamer's own game; in multiplayer, `game_started` is written after the first answer of the server.
-- Several streamers can play on the same server, each with their own bridge and LibertyTalk widget. Each one has their own waiting list and limits; the limits marked "all players" apply to them together.
-- The webhooks, workflows and game events of the F8 window stay on each streamer's PC, in `talky_config.json`. The caps of the Settings page come from the server.
-- The server never reads or writes the files of `Zomboid\Lua`. In a hosted game, the server and the host's game share that folder; only the host's game reads the jobs.
+- The admin runs the bridge in server mode on the machine of the server, or on the PC that hosts the game. It listens on every address of the machine, port 7420 by default, and works with the `Zomboid/Lua` folder of the server.
+- In game, the admin adds each streamer on **F8 > Webhooks** with their username. The bridge draws a token for each one. The admin sends the streamer the public address of the bridge (`http://<public IP of the server>:7420`) and their token.
+- The streamer pastes the two values into their LibertyTalk widget: no bridge, no tunnel on their PC.
+- A webhook call carries the token of a streamer. The bridge writes the job for that streamer (`target`), the server reads it from the inbox and runs it around their character. Every player sees the effects in the world.
+- The server writes the game events (`zombie_killed`, `player_died`, `job_done`, `action_failed`...) with the streamer they are about; their workflows run for that streamer.
+- One set of webhooks, workflows and game events for the whole server: the `talky_config.json` of the server. Admins edit it in F8.
 
-### Install on a server
+### Install the mod on a server
 
-The mod goes on the server and on every client. A player who joins a server only runs the mods of the server's list, so Talky must be in that list, even for a single streamer.
+The mod goes on the server and on every client. A player who joins a server only runs the mods of the server's list, so Talky must be in that list.
 
 **Dedicated server.** Stop the server. In `Zomboid\Server\<server name>.ini` (`servertest.ini` by default; the `Zomboid` folder is in the home folder of the account that runs the server), add Talky to these two lists, separated from the other entries by `;`:
 
@@ -197,28 +196,56 @@ WorkshopItems=<Workshop id of Talky>
 - Without the Workshop, leave Talky out of `WorkshopItems` and copy the `Talky` folder of the zip into the `Zomboid\mods` folder of the server and of every player. Every copy must be the same version.
 - Game 42.21 reads `Mods=\Talky` the same way as `Mods=Talky`.
 
-Start the server. Its console (`Zomboid\server-console.txt`) shows `[Talky] server ready (Talky 0.4.0, protocol 1)`.
+**Hosted game.** In the main menu: **Host** > **Manage settings...**, select the settings, then **Edit Selected Settings**. On the **Mods** page, add Talky ("Add an installed mod to the list"). With the Workshop version, also add it on the **Steam Workshop** page. The **Talky** page of the same settings holds the options below (if it is missing, enable Talky in the **Mods** menu of the main menu and open the settings again).
 
-**Hosted game.** In the main menu: **Host** > **Manage settings...**, select the settings, then **Edit Selected Settings**. On the **Mods** page, add Talky ("Add an installed mod to the list"). With the Workshop version, also add it on the **Steam Workshop** page. The **Talky** page of the same settings holds the options below (if it is missing, enable Talky in the **Mods** menu of the main menu and open the settings again). Then start the game. The console of the server of a hosted game is `Zomboid\coop-console.txt`.
+### Run the bridge next to the server
 
-**On each streamer's PC.** Nothing new: the mod (same version as the server) and the bridge, as in [Install](#install). Start the bridge, then join the server. F8 > Status shows `Multiplayer:  the server runs your jobs (Talky 0.4.0 on the server).`, or `Hosted game (you are the host):` for the host.
+**Linux (dedicated server).**
 
-### Who may use Talky
+1. Install Node.js 18 or later.
+2. Extract the zip to a folder of the account that runs the server, for example `~/talky`.
+3. With that account: `sh ~/talky/start-bridge.sh`. It starts the bridge in server mode; on the first start it creates `bridge/config.json` with `"mode": "server"`.
+4. Open the TCP port 7420 to the internet: the firewall of the machine (`sudo ufw allow 7420/tcp`, for example) and the one of the hosting provider, if any.
+5. To start the bridge with the machine: `talky-bridge.service` of the zip is an example unit for systemd (instructions inside).
 
-On a server, the server checks every job. A player may use Talky when:
+**Windows (dedicated server).** In a terminal in the Talky folder: `start-bridge.cmd server` (or a shortcut to `start-bridge.cmd` with the `server` argument). Open the port in an administrator PowerShell: `New-NetFirewallRule -DisplayName "Talky bridge" -Direction Inbound -Protocol TCP -LocalPort 7420 -Action Allow`.
 
-- their role has the **CreateHorde** capability and the option **Admins and moderators may use Talky** is on (default). Among the default roles, admin and moderator have it, gm and observer do not. A custom role can be given it;
-- or their username is in **Allowed players**: usernames separated by commas or semicolons. A space is part of the name: `Big Boss` is one username. Only the letters A to Z ignore case, as for the account names of the game: `zoé` and `ZOÉ` are two names, `Bob` and `bob` one.
+**Hosted game.** The host runs `start-bridge.cmd server` on their PC: the server of a hosted game runs on the same PC, with the same `Zomboid\Lua` folder. Forward the TCP port 7420 of the router to this PC. Without a public address, a cloudflared tunnel works too (`cloudflared tunnel --url http://127.0.0.1:7420`): its `https://` address is then the public address of the bridge.
 
-On a server open to everyone, the first person who connects with a free username creates that account. Add a streamer to **Allowed players** after they joined once and set a password, or use a whitelisted server.
+The bridge must use the `Zomboid/Lua` folder of the server: run it with the account that runs the server. For a server started with `-cachedir=<folder>`, set `zomboidLuaDir` in `bridge/config.json` to `<folder>/Lua`. At its start, the bridge window shows `listening on http://0.0.0.0:7420 (server mode)`, the number of streamers and the public address. The console of the server shows `[Talky] server ready (Talky 0.5.0)`, then `inbox ready, last seq = 0 (server)` (`Zomboid\server-console.txt`, or `coop-console.txt` for a hosted game).
 
-For anyone else, F8 > Status shows `the server refuses the jobs of <name>.` and the game sends no job. The jobs wait in the bridge and expire after `jobTtlSeconds`. The game asks the server again every 30 seconds, so a role or an **Allowed players** entry given during the game applies without reconnecting. The server checks the permission again on every tick for the jobs it already accepted. If the permission is removed during the game, the server drops the jobs of that player, waiting or running, and refuses the next ones the game sends: each one gives `job_rejected` with the reason `not_allowed`. The game then stops sending jobs and asks the server again every 30 seconds. A category turned off during the game (see [Server options](#server-options-sandbox-options--talky)) works the same way: the steps of that category that have not run yet give `action_failed` with the code `disabled`.
+### Add a streamer (admins)
 
-**Hosted game.** The host's account starts with the default role, not admin, so the host is refused at first. F8 > Status then shows `Your role on this server is not admin: click Allow me, or add <name> to Sandbox Options > Talky > Allowed players.` The **Allow me (host)** button sends `/setaccesslevel "<your username>" admin` to the server, which accepts this command from the host of the game. A few seconds later the status changes to `the server runs your jobs`. The other way: add the host's username to **Allowed players** before starting the game.
+1. Press **F8**, page **Webhooks**, tab **Streamers**. The page is reserved to the admins: roles with the **CreateHorde** capability (admin and moderator by default). The server checks it at every request.
+2. **Public address of the bridge**: `http://<public IP of the server>:7420`, then **Save**. An address typed without `http://` gets it, with the port of the bridge (`203.0.113.5` becomes `http://203.0.113.5:7420`). `publicUrl` in `bridge/config.json` sets it too.
+3. Type the username of the streamer at the bottom left, then **+ Add streamer**. A second later the bridge has drawn their token and the streamer shows in the list.
+4. Select the streamer. The page shows the two values of their widget, the token masked (**Show token** shows it). **Copy URL and token** puts both in the clipboard, one per line: send them to the streamer in private, never on stream.
+5. **New token**: the old token stops at once, the streamer pastes the new one into the widget. **Remove**: their token stops, and their jobs waiting or running are dropped.
 
-In single player every job runs, and the sandbox options of Talky do not apply: the caps are those of F8 > Settings.
+The username is the account name on the server (only A to Z ignore case, as for the accounts of the game). A streamer can be added before their first connection: their jobs wait while they are offline.
 
-The `cmd` log of the server (in `Zomboid\Logs`) records each Talky command with the username of the player who sent it.
+Hosted game: the host's account starts with the default role, so the host is not admin at first. F8 > Status and F8 > Webhooks then show **Allow me (host)**: the button sends `/setaccesslevel "<your username>" admin` to the server, which accepts this command from the host of the game. A few seconds later the window shows the admin pages.
+
+### What the streamer does
+
+1. Join the server (the mod comes with the server's list).
+2. In their LibertyTalk widget: **Talky bridge public URL** = the address from the admin, **Bridge token** = their token. **Save**, then **Activate** (see [Connect LibertyTalk](#connect-libertytalk-the-project-zomboid--talky-widget)).
+3. F8 > Status shows `You are a streamer of this server: the events of your live happen around your character.`
+
+### Ports and security
+
+- The bridge listens on TCP 7420 (`port` of `bridge/config.json`), on every address (`host` empty or `0.0.0.0`). Only this port is needed; the game server keeps its own ports.
+- **HTTP in clear text.** Between LibertyTalk and the bridge, the token of the streamer travels in clear (`X-Bridge-Token` header): someone who can read that traffic could reuse it until the admin draws a new one. For https, put a reverse proxy with a certificate in front of the bridge (Caddy, nginx...), set `"host": "127.0.0.1"` in `bridge/config.json` so that the bridge only answers the proxy, and give the `https://` address of the proxy as public address.
+- The token of the bridge (`token` of `bridge/config.json`) is for the admin, on the machine of the server (`node bridge.js fire <workflow> streamer=<username>`, `/health`). The streamers never need it, and `/hooks/<id>` refuses it in server mode.
+- The tokens of the streamers stay on the machine of the server: `bridge/streamers.json` (the copy the bridge trusts), and `Zomboid/Lua/talky_streamers.json`, which the server code reads to show them to the admins. They only go to the game of an admin who opens the Streamers tab. Every mod of the server's list can read the `Zomboid/Lua` folder of the server: install on a server only mods you trust. In a hosted game, the host's game shares that folder.
+- The bridge closes slow connections (10 s for the headers, 15 s for a request), keeps 64 connections at most and refuses bodies over 64 KB. Without a valid token, every webhook id answers 401.
+
+### Who may do what
+
+- **The streamers of F8 > Webhooks** get the effects of their own live, around their own character. The bridge only writes a job for a known token, and the server only runs a job for a streamer of its list.
+- **The admins** (CreateHorde capability, admin and moderator by default) manage the streamers, edit the configuration of the server, and run **Test now**, which runs the workflow around their own character, streamer or not.
+- The server checks the capability at every command, never trusts a name sent by a client (the player is the one of the connection), and checks again once a second that the owner of each job is still a streamer: a streamer removed during the game loses their waiting and running jobs (`job_rejected` with `not_streamer`).
+- In single player every job runs, and the sandbox options of Talky do not apply: the caps are those of F8 > Settings.
 
 ### Server options (Sandbox Options > Talky)
 
@@ -228,9 +255,8 @@ Where to set them:
 - dedicated server: `Zomboid\Server\<server name>_SandboxVars.lua`, in the `Talky` table. Stop the server before you edit it:
   ```lua
   Talky = {
-      AllowedPlayers = "streamer_one, streamer_two",
-      AllowAdmins = true,
       MaxZombiesPerAction = 30,
+      AllowFire = false,
       -- ...
   },
   ```
@@ -240,17 +266,15 @@ A world created before 0.4.0 has no Talky options: the defaults apply until you 
 
 | Option (in game) | `Talky.` name | Default | Range | Effect |
 |---|---|---|---|---|
-| Allowed players | `AllowedPlayers` | empty | text | Usernames that may use Talky, separated by commas or semicolons (a space is part of the name). |
-| Admins and moderators may use Talky | `AllowAdmins` | on | | Roles with the CreateHorde capability may use Talky without being in the list. |
 | Max zombies per action | `MaxZombiesPerAction` | 30 | 1-300 | One `spawn_zombie` or `horde` step. |
 | Max zombies per job | `MaxZombiesPerJob` | 60 | 1-500 | All the steps of one job together. |
 | Max zombies per player per 10 minutes | `MaxZombiesPer10Min` | 150 | 1-2000 | Jobs of one streamer, over the last 10 minutes. |
 | Max zombies per 10 minutes (all players) | `MaxZombiesPer10MinServer` | 400 | 1-5000 | Every streamer together. |
 | Max spawn distance (tiles) | `MaxSpawnDistance` | 40 | 5-150 | Distance from the streamer. |
-| Max steps per job | `MaxStepsPerJob` | 100 | 10-500 | Steps beyond it are dropped; the console of the streamer's game says how many. |
-| Max waiting jobs per player | `MaxQueuedJobs` | 10 | 1-50 | Beyond it the server answers `busy` and the streamer's game sends the job again 5 seconds later. |
+| Max steps per job | `MaxStepsPerJob` | 100 | 10-500 | Steps beyond it are dropped; the console of the server says how many. |
+| Max waiting jobs per player | `MaxQueuedJobs` | 10 | 1-50 | Beyond it, the next jobs of that streamer stay in the inbox of the bridge and are read again a second later. |
 | Max jobs running at the same time per player | `MaxActiveJobs` | 4 | 1-20 | A job keeps its slot during its `wait` steps. |
-| Max jobs per minute per player | `MaxJobsPerMinute` | 30 | 1-120 | Beyond it the server answers `rate_limited` and the job is sent again later, until its time to live ends. |
+| Max jobs per minute per player | `MaxJobsPerMinute` | 30 | 1-120 | Beyond it, the next jobs of that streamer stay in the inbox until the minute is over, or until their time to live ends. |
 | Zombies and hordes | `AllowZombies` | on | | `spawn_zombie`, `horde`. |
 | Items | `AllowItems` | on | | `give_item` (100 items per action at most). |
 | Max items per player per 10 minutes | `MaxItemsPer10Min` | 300 | 1-5000 | |
@@ -277,48 +301,45 @@ A world created before 0.4.0 has no Talky options: the defaults apply until you 
 
 The category toggles return the code `disabled`; the budgets return `budget` and the cooldowns `cooldown` (see [Events sent back by the game](#events-sent-back-by-the-game)).
 
-Fixed limits on a server (not options): 50 waiting jobs and 12 running jobs for every player together; 10 zombies created per tick for the whole server (a bigger group appears over the next ticks); 100 items and 1000 XP per action; 12 game hours of weather per action; 900 seconds of `wait` steps per job; 10 `fire` steps per streamer and 20 for the whole server per 10 minutes; 60 `noise` and `sound` steps per streamer per 10 minutes (beyond these budgets: `action_failed` with `budget`); 12 `say` lines a minute per streamer and 60 for the whole server, beyond which the line still shows above the character but does not go to the chat; 128 named zombies on the server, 32 per streamer; 5 commands per second per player. In single player, `fire`, `noise`, `sound` and `say` have no budget.
+Fixed limits on a server (not options): 50 waiting jobs and 12 running jobs for every player together; 10 zombies created per tick for the whole server (a bigger group appears over the next ticks); 100 items and 1000 XP per action; 12 game hours of weather per action; 900 seconds of `wait` steps per job; 10 `fire` steps per streamer and 20 for the whole server per 10 minutes; 60 `noise` and `sound` steps per streamer per 10 minutes (beyond these budgets: `action_failed` with `budget`); 12 `say` lines a minute per streamer and 60 for the whole server, beyond which the line still shows above the character but does not go to the chat; 128 named zombies on the server, 32 per streamer; 5 commands per second per player; 200 streamers. In single player, `fire`, `noise`, `sound` and `say` have no budget.
 
-A job that has not started when its time to live ends is dropped (`job_expired`), in single player too: the time to live is `jobTtlSeconds` of the bridge, and never more than 15 minutes after the bridge created the job.
+A job that has not started when its time to live ends is dropped, in single player too: the time to live is `jobTtlSeconds` of the bridge, and never more than 15 minutes after the bridge created it.
 
 ### Refused and delayed jobs
 
-- **Refused for good** (`not_allowed`, `invalid`, `unknown_action`, `disabled`, `expired`): the game tells the bridge the job is taken, so it leaves the inbox. It writes `job_rejected {seq, workflow, reason}` for the bridge, shows the banner `Talky: job #12 refused by the server (not allowed)`, and F8 > Status shows the last refused job. The bridge window prints the reason with what to do. `duplicate` (the server already has the job) counts as accepted.
-- **Too large to be sent** (`too_large`, multiplayer only): the job does not fit in one network message of the game, so the streamer's game never sends it. It is acknowledged and reported like a refused job, with the banner `Talky: job #12 is too large to be sent to the server, skipped`. Give the workflow fewer steps (count the turns of `repeat`) or shorter texts.
-- **Delayed** (`busy`: waiting list full; `rate_limited`: too many jobs in the last minute): the game sends the job again later, 5 seconds later for `busy`, and keeps the order of the jobs behind it.
+- **Refused for good** (`not_streamer`, `disabled`, `unknown_action`, `invalid`): the server takes the job out of the inbox (ack) and writes `job_rejected {seq, workflow, reason, streamer}`. The bridge window prints the reason with what to do, and F8 > Status (admins) shows it. `not_streamer`: the job names no streamer of the server (removed in F8 > Webhooks, or a bridge in solo mode next to the server).
+- **Delayed** (the waiting list of the streamer is full, or too many jobs in the last minute): the job stays in the inbox and the server reads it again, the next second or when the minute is over. The jobs of the same streamer behind it wait too, so their order is kept; the jobs of the other streamers go on.
 - **One step refused** (an action turned off, a cooldown, a budget used up, no free square): the other steps run, and the bridge receives `action_failed` with the code. A job whose steps are all refused is refused for good, with the reason of the first step.
-- **No answer**: the game sends the job again every 30 seconds until its time to live ends. F8 > Status counts the jobs without answer after 15 seconds.
-- **Expired on the server**: a job that waited past its time to live before it could start gives `job_expired {seq, workflow}`.
+- **Expired**: a job older than its time to live when the server reads it is taken without running; one that waited past it in the queue of the server, or whose streamer stayed offline 15 minutes, gives `job_expired {seq, workflow, streamer}`.
 
 ### Limits in multiplayer
 
-- The bridge runs on the streamer's PC. A dedicated server cannot read the jobs of a bridge installed on its own machine in this version.
+- The machine of the server must be reachable from the internet on the port of the bridge, or through a reverse proxy or a tunnel. A rented server where you cannot run Node.js cannot run the bridge.
 - Weather and time of day are the same for every player. Their cooldowns count for the whole server.
 - On a server, `testHelicopter()` picks a random online player: the helicopter is off by default and, when on, only runs while one player is online, unless **Helicopter with several players online** is on (otherwise `action_failed` with `helicopter_random_target`).
 - On a server, a storm starts at once for every player; a blizzard or a tropical storm reaches the other players at the next climate update of the server, up to 10 game minutes later. A time change reaches the players within about 10 seconds.
 - Names above zombies last while the zombie stays in the game: a zombie that despawns far from players, a zombie the game reuses, a server restart or 30 minutes remove the name. Every player sees the names (often viewer names). With more than 32 named zombies per streamer, or 128 in all, the oldest lose their name.
-- `zombie_killed` is sent once per zombie, to the streamer whose job spawned it, and only while that streamer is online. `byPlayer` is `true` when that streamer killed it.
-- `heal` runs on the streamer's game (health belongs to the player's game in multiplayer). On a dead character it gives `action_failed` with `dead`.
+- `zombie_killed` is written once per zombie, for the streamer whose job spawned it, online or not. `byPlayer` is `true` when that streamer killed it.
+- `heal` runs on the streamer's game (health belongs to the player's game in multiplayer).
 - **Distance from other players** can leave a spawn, a fire or a vehicle without a free square: `action_failed` with `no_square`.
-- The jobs of a streamer who is offline or dead, or of a paused server, wait; `wait` steps keep counting in real time. After 15 minutes offline, the jobs of that streamer are dropped. The events of a streamer who is offline are lost.
-- The server and every client must run the same Talky version. Otherwise F8 > Status shows `Talky <version> on the server, 0.4.0 here: install the same version on both.` and nothing is sent.
+- The jobs of a streamer who is offline or dead, or of a paused server, wait; `wait` steps keep counting in real time. After 15 minutes offline, the jobs of that streamer are dropped (`job_expired`).
+- The bridge skips the game events that are more than 10 minutes old when it reads them (written while it was stopped); the requests of the admins about the streamers are kept.
+- The server and every client run the same Talky version: the game only lets a player join with the mods of the server.
 - Actions that other mods add with `Talky_Actions.register` run on a server only with `network = true` and the option **Actions of other mods**.
 
 ### To check in a real game
 
-Version 0.4.0 was tested with a simulated game API: the Lua runs in Kahlua with fake game objects, in single player, on a dedicated server with several clients and in a hosted game. Not yet checked in a real game:
+Version 0.5.0 was tested with a simulated game API (the Lua runs in Kahlua with fake game objects, one Lua state per game process: a single player game, a dedicated server with several clients, a hosted game) and with real bridges started by the tests. Not yet checked in a real game:
 
-- `heal` (on the streamer's game) and `stat` (changed on the server, then sent to the player);
-- names above zombies in multiplayer;
-- the target of the helicopter on a server (a random player);
-- the delay of a blizzard or a tropical storm on a server (next climate update);
-- the delay of a time change on a server (about 10 seconds);
-- the **Allow me (host)** button in a hosted game;
-- `say` through the chat in multiplayer, items on the ground on a server, the vehicle type check, the role and safehouse checks of the server code, and the empty default of the text options (**Allowed players**, **Forbidden items**).
+- the server code reading and writing the `Zomboid/Lua` folder of a dedicated server (`getFileReader` / `getFileWriter` on the server), of a server started with `-cachedir`, and of the server of a hosted game;
+- `player_died` read on the server (`isDead`, `getHoursSurvived` and `getZombieKills` of the server's player), and `getServerName()` of `game_started` on a server;
+- the F8 window of an admin on a real server: the configuration loaded and saved, the clipboard with two lines;
+- LibertyTalk calling an `http://<IP>:<port>` address (it needs the LibertyTalk update that accepts it);
+- still to check since 0.4.0: `heal` (on the streamer's game) and `stat` (changed on the server, then sent to the player); names above zombies in multiplayer; the target of the helicopter; the delay of a blizzard or of a time change on a server; the **Allow me (host)** button; `say` through the chat; items on the ground; the vehicle type check; the role and safehouse checks of the server code; the empty default of **Forbidden items**.
 
 ## Writing workflows by hand
 
-The F8 window covers everything below. This section is for those who prefer to edit `Zomboid\Lua\talky_config.json`.
+The F8 window covers everything below. This section is for those who prefer to edit `Zomboid\Lua\talky_config.json` (in multiplayer, the one of the server).
 
 ### Webhooks and workflows
 
@@ -348,9 +369,12 @@ Each key of `webhooks` becomes `POST /hooks/<key>`. `routes` picks the workflow 
 }
 ```
 
+In server mode, the cooldowns count per streamer: a `!zombie` on one stream does not hold the others.
+
 ### Templates `{{ }}`
 
 - `{{user}}`, `{{bits}}`, `{{payload.field.sub_field}}`, `{{query.param}}`. `{{user}}` is the `user` field when the call has one, otherwise the first field found among `user_name`, `author_display_name`, `display_name`, `donor`, `chatter_name`, `actor_name`, `username`, `author_username`, `user_login` and `name`, so the same workflow works for Twitch and YouTube. When none is filled, it is the name for anonymous events (F8 > Settings).
+- In server mode, `{{streamer}}` is the username of the streamer the job is for.
 - Filters: `{{bits | div:100 | floor | clamp:1:20}}`, `{{tier | tier}}` (1000/2000/3000 becomes 1/2/3), `{{user | upper}}`, `{{user | truncate:12}}`, `{{viewers | default:5}}`, `{{'' | pick:Ann:Bob:Cid}}`.
 - All filters: `default upper lower truncate number round floor ceil add sub mul div min max clamp tier pick json`.
 - A field that holds a single `{{...}}` keeps its type: `"count": "{{viewers}}"` gives a number.
@@ -400,7 +424,7 @@ The bridge resolves these steps before it sends the job to the game.
 | `heal` | full heal (on the streamer's game) |
 | `stat` | `stat` (`PANIC`, `STRESS`, `FATIGUE`, `HUNGER`, `THIRST`, `INTOXICATION`...), `op` (`add`, `set` or `remove`), `value` |
 | `xp` | `perk` (for example `Woodwork`), `amount` (10 000 at most in single player, 1000 on a server). On a server the amount is a whole number: the fraction is dropped, and a value below 1 gives `action_failed` with `invalid`. Single player keeps the fractions. |
-| `emit` | `event`, `data`: sends an event back to the bridge (not `test_workflow`, `game_started` nor `player_died`, which only the game itself writes) |
+| `emit` | `event`, `data` (8 KB at most): writes an event for the bridge (not `test_workflow`, `game_started`, `player_died`, `job_rejected`, `job_expired` nor the streamer requests, which only Talky writes: `action_failed` with `invalid`) |
 
 `item` and `script` must exist in the game scripts; on a server the item must also be neither hidden nor obsolete, and outside **Forbidden items**. On a server, each action also follows the sandbox options (see [Multiplayer](#multiplayer)): categories, budgets, cooldowns, distance from other players.
 
@@ -424,11 +448,13 @@ A handler returns nothing when it worked, or a short code (`"no_square"`, for ex
 
 ## Events sent back by the game
 
+In server mode, the server writes them, and each one about a job or a player also carries `streamer`: the workflows of `gameEvents` then run for that streamer.
+
 | Event | Data |
 |---|---|
 | `zombie_killed` | `name`, `byPlayer` (a named zombie dies; `byPlayer` is `true` when the streamer killed it) |
-| `player_died` | `hoursSurvived`, `zombieKills` |
-| `game_started` | `mode` (`sp` or `client`), `host` (`true` for the host of a hosted game), `server` (server name, empty in single player). In multiplayer, written after the first answer of the server. |
+| `player_died` | `hoursSurvived`, `zombieKills` (in server mode: a streamer dies) |
+| `game_started` | `mode` (`sp`, or `server` when a server starts), `host`, `server` (server name, empty in single player). No streamer: its workflows only run their `http` and `log` steps in server mode. |
 | `job_done` | `seq`, `workflow` |
 | `action_failed` | `seq`, `action`, `code`, and `error` with the same value (the field of 0.3.0) |
 | `job_rejected` | `seq`, `workflow`, `reason`: a job refused for good (see [Refused and delayed jobs](#refused-and-delayed-jobs)) |
@@ -469,91 +495,96 @@ A target can also sign the body: `"hmacSecret"` and `"hmacHeader": "X-LT-Signatu
 
 ## Security
 
-- **Token.** Every call to `/hooks/<id>` and `/fire/<workflow>` needs the token, in the `X-Bridge-Token` header or in `?token=`. The comparison runs in constant time. Without a valid token, every webhook id answers 401, so the ids cannot be guessed. A webhook listed in `hookTokens` of `bridge\config.json` has its own token and refuses the global one; a `token` written for a webhook in `talky_config.json` counts for nothing (the bridge window says so). `POST /fire/<workflow>` runs any workflow with the global token.
-- **Network.** The bridge listens on `127.0.0.1` only (`host` in `config.json`). The tunnel is what makes it reachable from the internet.
+- **Token.** Every call to `/hooks/<id>` and `/fire/<workflow>` needs a token, in the `X-Bridge-Token` header or in `?token=`. The comparison runs in constant time. Without a valid token, every webhook id answers 401, so the ids cannot be guessed. Single player: the token of the bridge, or for a webhook listed in `hookTokens` of `bridge\config.json` its own token (it then refuses the bridge token); a `token` written for a webhook in `talky_config.json` counts for nothing (the bridge window says so). Server mode: `/hooks/<id>` takes the token of a streamer only, and that token names the streamer; `/fire/<workflow>` takes the token of a streamer, or the token of the bridge with `streamer=<username>`.
+- **Network.** Single player: the bridge listens on `127.0.0.1` only (`host` empty in `config.json`); the tunnel is what makes it reachable from the internet. Server mode: the bridge listens on every address (`0.0.0.0`), in clear text: see [Ports and security](#ports-and-security).
 - **Outgoing calls.** An `http` step only reaches the hosts listed in `httpAllowedHosts` of `bridge\config.json` (default `["*.liberty-talk.com"]`; `*.example.com` covers every subdomain of example.com but not example.com itself; `"*"` allows every host and removes this protection). Another step is refused and shown in the bridge window and on the F8 Status page. Redirects are not followed. The reason: `talky_config.json` lives in `Zomboid\Lua`, a folder every other mod can write to. Without the list, a mod could add an `http` step and use the bridge to send data anywhere, on the internet or on your local network. The list itself stays in `bridge\config.json`, out of reach of game mods.
-- **Other mods.** Every mod running in the game can read `talky_status.json` and `talky_config.json`, write `talky_config.json` and the outbox, and send what it reads to the server it plays on. On a server, these are all the mods of the server's list. So no token, no http secret and no full webhook URL goes to these files: the tokens and the targets stay in `bridge\config.json`, `talky_status.json` lists only the ids of the webhooks with a dedicated token, and the **Copy command** buttons copy a command. Game mods can also read the clipboard: after `node bridge\bridge.js url`, paste the URL, then copy something else. Talky itself sends neither token, nor URL, nor webhook to the server. A mod can still add a workflow that calls an incoming webhook of any LibertyTalk account (a host of `httpAllowedHosts`), or run a workflow through a game event or **Test now**. Join only servers whose mod list you accept, or stop the bridge before you join. In doubt, run `node bridge\bridge.js new-token`, restart the bridge, then update the LibertyTalk widget and the webhook URLs.
-- **Test now.** The bridge writes a random test code in `talky_status.json` at each start, and runs a `test_workflow` event only when it carries that code. The code only stops `test_workflow` lines that a Talky server would have the game write: the server never knows it (and the game already refuses to write these lines for the server). A mod running in the game can read it.
-- **Multiplayer.** The server receives, for each job, its number, the workflow name, the viewer name and the game steps. The token, the public URL and the webhooks never leave the streamer's PC. The server keeps only the known parameters of each step, with their type and bounds (numbers such as `NaN` or `1e308` fall back to the default, texts are cut, colors must be `#rrggbb`), and never trusts a name sent by a client: the sender is the player of the connection. From the server, the streamer's game only writes `zombie_killed`, `job_done`, `action_failed`, `job_rejected` and `job_expired`, with fixed fields, 60 lines a minute at most; an `emit` step is written from the game's own copy of the job, and `test_workflow`, `game_started` and `player_died` only come from the game itself. Each player may send 5 Talky commands per second.
+- **Other mods.** Every mod running in the game can read `talky_status.json` and `talky_config.json`, write `talky_config.json` and the outbox. So, in single player, no token, no http secret and no full webhook URL goes to these files: the tokens and the targets stay in `bridge\config.json`, `talky_status.json` lists only the ids of the webhooks with a dedicated token, and the **Copy command** buttons copy a command. Game mods can also read the clipboard: after `node bridge\bridge.js url`, paste the URL, then copy something else. A mod can still add a workflow that calls an incoming webhook of any LibertyTalk account (a host of `httpAllowedHosts`), or run a workflow through a game event or **Test now**. On a server, the mods of the server's list can also read `talky_streamers.json` (the tokens of the streamers) and write the outbox (the requests of the admins about the streamers): install on a server only mods you trust. An `emit` step can never write these requests.
+- **Test now.** The bridge writes a random test code in `talky_status.json` at each start, and runs a `test_workflow` event only when it carries that code. In multiplayer, the server writes the event for an admin, with the code read from `talky_status.json` of the server.
+- **Multiplayer.** No job crosses the network: the server reads them from the bridge's files. A client only receives the effects of its own game (banners, `say`, `halo`, `heal`), the names above zombies and, for an admin, what the F8 window needs. The server checks the capability of the player at every admin command, keeps only the known parameters of each step, with their type and bounds (numbers such as `NaN` or `1e308` fall back to the default, texts are cut, colors must be `#rrggbb`), and never trusts a name sent by a client: the player is the one of the connection. Each player may send 5 Talky commands per second.
 - **Caps.** `wait` 600 s, texts of `notify` / `say` / `halo` 200 characters, banners 60 s, zombie names 40 characters, `repeat` 100 iterations, 500 game steps and 20 `http` / `log` steps per job, 10 000 steps and loop turns walked through per job (past that, the rest of the workflow is skipped and the bridge window says so), 200 jobs waiting in the game in single player, body of a webhook call 64 KB. On a server, the sandbox options and the fixed limits of [Multiplayer](#multiplayer) apply on top.
-- **On stream.** The F8 window never shows nor copies a token. `node bridge\bridge.js url` prints the URL with the token masked, unless you add `--show`. The bridge window shows `~` instead of your Windows user folder, error messages included. On its first launch, the bridge copies its new token to the clipboard without printing it.
-- **Secrets on disk.** `bridge\config.json` and `bridge\bridge-state.json` are in `.gitignore` and never in the release zip. The Steam Workshop item only contains the mod.
+- **On stream.** The F8 window never shows a token, except the Streamers tab of an admin after **Show token**. `node bridge\bridge.js url` prints the URL with the token masked, unless you add `--show`. The bridge window shows `~` instead of your user folder, error messages included, and never prints a token. On its first launch, the bridge copies its new token to the clipboard without printing it.
+- **Secrets on disk.** `bridge\config.json`, `bridge\streamers.json` and `bridge\bridge-state.json` are in `.gitignore` and never in the release zip. The Steam Workshop item only contains the mod.
 
 ## Limits
 
 - Multiplayer has its own limits: see [Limits in multiplayer](#limits-in-multiplayer) and [To check in a real game](#to-check-in-a-real-game).
 - The address of a quick tunnel changes at each launch: update the widget settings and the F8 public URL.
-- Version 0.4.0 was tested with a simulated game API: the Lua runs in Kahlua (the Lua VM of the game) with fake game objects. Also to check in a real game, since 0.3.0: the position of the names above heads, zombie aggro (`spotted` / `pathToCharacter`), `testHelicopter()` outside debug mode, the weather stage numbers (taken from the B42 debug menu), the custom key binding, and `byPlayer`.
-- The poll mode (below) was not tested against a live LibertyTalk instance.
+- Version 0.5.0 was tested with a simulated game API: the Lua runs in Kahlua (the Lua VM of the game) with fake game objects. Also to check in a real game, since 0.3.0: the position of the names above heads, zombie aggro (`spotted` / `pathToCharacter`), `testHelicopter()` outside debug mode, the weather stage numbers (taken from the B42 debug menu), the custom key binding, and `byPlayer`.
+- The poll mode (below) was not tested against a live LibertyTalk instance, and does not exist in server mode.
 
 ## Troubleshooting
 
 | Symptom | Cause and fix |
 |---|---|
 | F8 shows "Bridge offline" | The bridge is not running, or `zomboidLuaDir` in `config.json` points to the wrong folder (game started with `-cachedir`). |
-| `No config at ... Start the bridge once (start-bridge.cmd)`, after `node bridge\bridge.js fire ...` | `bridge\config.json` does not exist yet. Start the bridge once with `start-bridge.cmd`: it creates the file. |
+| `No config at ... Start the bridge once (start-bridge.cmd, or start-bridge.sh on Linux)`, after `node bridge\bridge.js fire ...` | `bridge\config.json` does not exist yet. Start the bridge once: it creates the file. |
 | `Cannot create ...\bridge\config.json` | You cannot write to the Talky folder (under `C:\Program Files`, say). Move it to `Documents\Talky` and start `start-bridge.cmd` again. |
 | `Set a long random "token" in config.json` | The token is empty or still `change-me...` (a `config.json` copied by hand from `config.example.json`). Put a long random string there, or delete `config.json` and start the bridge again: it creates a new one. |
-| `warning: cloudflared is not in the PATH` | Install it with `winget install --id Cloudflare.cloudflared`, then open a new window. |
+| `warning: cloudflared is not in the PATH` | Single player: install it with `winget install --id Cloudflare.cloudflared`, then open a new window. |
 | `warning: Talky is installed twice` | Delete `%USERPROFILE%\Zomboid\mods\Talky`: the Workshop version is enough. |
 | `warning: The bridge folder ... is inside ...\Zomboid\mods` | Move the whole Talky folder, `bridge\config.json` included, out of `Zomboid\mods` (to `Documents\Talky`, say), then start `start-bridge.cmd` from there. The token does not change. |
 | `'node' is not recognized`, or `Node.js was not found on this PC.` in the `start-bridge.cmd` window | Install Node.js 18 or later, then open a new window. |
-| `Port 7420 is already used` | Another program (or a second bridge) uses the port. Change `port` in `config.json` and in the cloudflared command. |
-| LibertyTalk refuses the URL | The URL is local (`http://127.0.0.1...`). Paste the `https://...trycloudflare.com` address. |
-| `401 bad token` | Wrong token, or a webhook with its own token called with the global one. The bridge checks the token first: without the right one, even an unknown webhook id answers 401. |
+| `Port 7420 is already used` | Another program (or a second bridge) uses the port. Change `port` in `config.json`, and in the cloudflared command or the public address of the bridge. |
+| LibertyTalk refuses the URL | Single player: the URL is local (`http://127.0.0.1...`): paste the `https://...trycloudflare.com` address. Server: an `http://` address needs the LibertyTalk update that accepts it; meanwhile, an `https://` address (reverse proxy). |
+| `401 bad token` | Wrong token, or a webhook with its own token called with the global one. The bridge checks the token first: without the right one, even an unknown webhook id answers 401. Server mode: the bridge token is refused on `/hooks`: use the token of a streamer; a streamer whose token was renewed or who was removed gets 401. |
 | `404 unknown webhook` | The id is missing from `talky_config.json`. After the first launch, `config.json` is no longer read for webhooks, unless `talky_config.json` has neither webhooks nor workflows. |
 | `413 body too large` | Body over 64 KB. |
-| The bridge logs `job #N` but nothing happens | Game paused, player dead, back to the main menu, job older than `jobTtlSeconds`, or 8 jobs already running (long `wait` steps). In multiplayer, also: the server has not accepted it yet (F8 > Status), or its limits (see the rows below). |
-| F8 > Status: `the server refuses the jobs of <name>.` | Your username is not in **Allowed players** and your role does not have the CreateHorde capability: see [Who may use Talky](#who-may-use-talky). Host of a hosted game: click **Allow me (host)**. |
-| F8 > Status: `no answer from the server.` | The Talky code of the server did not answer for 2 minutes, and the game sends nothing. Look for `[Talky]` lines and Lua errors in the console of the server (`server-console.txt`, or `coop-console.txt` for a hosted game), then join again. In single player, look in `console.txt`. |
-| F8 > Status: `Talky <version> on the server, 0.4.0 here` | Install the same Talky version on the server and on every PC. |
-| F8 > Status: `Bridge older than 0.4.0` | Update the bridge with the zip of the same release as the mod. Game events and **Test now** need it. |
-| Status shows "skipped: no test code (update the mod)" or "skipped: test code mismatch, press Test now again" (an F8 window older than 0.4.0 shows "error: Test now refused: ...") | The bridge ran no test. First message: the test carried no test code, so the mod is older than 0.4.0: update it. Second message: the bridge restarted after the F8 window read its test code: press **Test now** again. The bridge window explains it once per start (`"Test now" refused: ...`). |
-| `warning: the "token" of webhook "<id>" in talky_config.json is ignored` | The F8 window of Talky 0.3.0 saved a dedicated token there. Until you move it to `hookTokens` in `bridge\config.json` and restart the bridge, the webhook takes the bridge token, and a URL with the old token gets `401 bad token`. |
-| `http step refused: "hmacSecret" written in the workflow` | Move the address and its secrets to `httpTargets` in `bridge\config.json`, write `"target": "<name>"` in the step, and restart the bridge (see [Sending a game event to LibertyTalk](#sending-a-game-event-to-libertytalk)). |
-| `http step refused: fill "httpTargets" > "lt_report" in bridge/config.json first` | The target still holds a `PASTE_...` placeholder: put the URL and the secret of your incoming webhook there, then restart the bridge. |
-| `warning: "jobTtlSeconds" in config.json is ...: 900 is used.` | The game and the server drop a job 15 minutes after the bridge created it: set `jobTtlSeconds` to 900 or less. |
-| The bridge window shows `not sent to the server: too_large` | The job does not fit in one network message of the game: give the workflow fewer steps or shorter texts. |
+| The bridge logs `job #N` but nothing happens | Game paused, player dead, back to the main menu, job older than `jobTtlSeconds`, or 8 jobs already running (long `wait` steps). On a server, also: the streamer is offline, the limits of the server (see the rows below), or the server does not read the inbox (look for `inbox ready` in its console). |
+| F8 > Status: `Bridge of the server: offline.` | Start the bridge on the machine of the server (`start-bridge.sh`, `start-bridge.cmd server`), with the account of the server, or set `zomboidLuaDir` to the `Lua` folder of the server. |
+| F8 > Status: `The bridge of the server runs in solo mode` | Start it with `--server`, or set `"mode": "server"` in `bridge/config.json`. |
+| F8 > Status: `no answer from the Talky code of the server` | The server does not run Talky, or its Talky code failed. Look for `[Talky]` lines and Lua errors in the console of the server (`server-console.txt`, or `coop-console.txt` for a hosted game). |
+| F8 > Webhooks: `Reserved to the admins of this server` | Your role does not have the CreateHorde capability. The host of a game clicks **Allow me (host)**. |
+| F8 > Webhooks: the streamer stays `waiting for the bridge to draw the token` | The bridge of the server is not running in server mode, or does not use the `Zomboid/Lua` folder of the server. |
+| The bridge window shows `refused by the server: not_streamer` | The streamer was removed, or the bridge runs in solo mode next to a server. |
 | The bridge window shows `refused by the server: disabled` | An action of the job is turned off in the sandbox options of the server (**Zombies and hordes**, **Fire**, **Helicopter**...). |
 | `action_failed` with `cooldown` or `budget` | A cooldown of the server (weather, thunder, time, helicopter) or a budget per 10 minutes or per job: see [Server options](#server-options-sandbox-options--talky). |
 | `action_failed` with `helicopter_random_target` | Several players are online and **Helicopter with several players online** is off. |
 | `action_failed` with `no_square` on a server | Another online player within **Distance from other players**, a safehouse the streamer may not enter, or no free square around the streamer. |
 | Status shows "skipped: cooldown / condition not met / chance roll lost / workflow disabled" | The workflow refused the event: see its settings on the Workflows page. |
+| Status shows "skipped: no test code (update the mod)" or "skipped: test code mismatch, press Test now again" | The bridge ran no test. First message: the test carried no test code, so the mod is older than 0.4.0: update it. Second message: the bridge restarted after the F8 window read its test code: press **Test now** again. |
 | `http step refused: host "..." is not in httpAllowedHosts` | Add the host to `httpAllowedHosts` in `bridge\config.json` and restart the bridge. |
+| `http step refused: fill "httpTargets" > "lt_report" in bridge/config.json first` | The target still holds a `PASTE_...` placeholder: put the URL and the secret of your incoming webhook there, then restart the bridge. |
+| `warning: "jobTtlSeconds" in config.json is ...: 900 is used.` | The game and the server drop a job 15 minutes after the bridge created it: set `jobTtlSeconds` to 900 or less. |
+| `warning: server mode, but the bridge listens on 127.0.0.1 only` | Set `host` to `""` in `bridge/config.json`, unless a reverse proxy of the machine forwards the calls to the bridge. |
+| `game event(s) older than 10 minutes skipped` | The server or the game wrote them while the bridge was stopped. Expected after a restart of the bridge. |
 | Nothing happens after a restart | The tunnel address changed: update the widget and the F8 public URL. |
 | The mod is not in the list | Without the Workshop, the game needs `%USERPROFILE%\Zomboid\mods\Talky\42\mod.info`: copy the `Talky` folder of the zip, not the folder that contains it. Check that Talky is not installed twice (Workshop and `Zomboid\mods`). |
 
-Logs: the game writes `[Talky]` lines in `%USERPROFILE%\Zomboid\console.txt`, a dedicated server in `Zomboid\server-console.txt`, the server of a hosted game in `Zomboid\coop-console.txt`. `http://127.0.0.1:7420/health?token=<token>` returns the number of jobs waiting, the last acknowledged job, the jobs acknowledged above it and the last 50 events.
+Logs: the game writes `[Talky]` lines in `%USERPROFILE%\Zomboid\console.txt`, a dedicated server in `Zomboid\server-console.txt`, the server of a hosted game in `Zomboid\coop-console.txt`. `http://127.0.0.1:7420/health?token=<bridge token>` returns the mode, the number of jobs waiting, the last acknowledged job, the jobs acknowledged above it and the last 50 events.
 
-Exchange files in `%USERPROFILE%\Zomboid\Lua\` of the streamer's PC: `talky_inbox.jsonl` (jobs), `talky_ack.txt` (`S`, or `S s1 s2 ...`: every job up to `S` is taken, and `s1`, `s2`... too), `talky_outbox.txt` (game events; `talky_outbox.jsonl` with Talky 0.3.0), `talky_status.json` (bridge heartbeat, with the test code and the ids of the webhooks that have a dedicated token, never a token) and `talky_config.json` (the configuration edited by the F8 window).
+Exchange files in `Zomboid\Lua\` of the game (single player) or of the server (server mode): `talky_inbox.jsonl` (jobs; in server mode each one with `target`), `talky_ack.txt` (`S`, or `S s1 s2 ...`: every job up to `S` is taken, and `s1`, `s2`... too), `talky_outbox.txt` (game events, and the requests of the admins about the streamers), `talky_status.json` (bridge heartbeat, with the mode, the test code and the ids of the webhooks that have a dedicated token, never a token), `talky_config.json` (the configuration edited by the F8 window) and, in server mode, `talky_streamers.json` (the streamers and their tokens, written by the bridge). In multiplayer, the game of a player only writes `talky_client.json` (its display settings).
 
 ## `bridge\config.json` reference
 
 | Key | Default | Role |
 |---|---|---|
+| `mode` | `solo` | `solo`: the bridge of a player's PC. `server`: next to a server, with a token per streamer. `--server` / `--solo` on the command line win for one run; `start-bridge.cmd server` and `start-bridge.sh` pass `--server`. |
 | `port` | `7420` | Port of the bridge. |
-| `host` | `127.0.0.1` | Listening address. Keep `127.0.0.1`: the tunnel connects locally. |
-| `token` | random | Token of the webhook calls, drawn when the bridge creates `config.json`. `node bridge\bridge.js new-token` draws a new one. |
-| `hookTokens` | `{}` | `{ "<webhook id>": "<16 characters or more>" }`: a webhook with its own token, which then refuses `token`. |
-| `zomboidLuaDir` | `%USERPROFILE%/Zomboid/Lua` | Folder shared with the mod. |
+| `host` | empty | Listening address. Empty: `127.0.0.1` in solo mode (the tunnel connects locally), `0.0.0.0` in server mode. `127.0.0.1` in server mode for a reverse proxy on the same machine. |
+| `publicUrl` | empty | Server mode: the address given to the streamers (`http://<public IP>:<port>`). The one set in F8 > Webhooks (saved in `talky_config.json`) wins. |
+| `token` | random | Token of the bridge, drawn when the bridge creates `config.json`. Single player: the token of the webhook calls. Server mode: `/fire` and `/health` only. `node bridge\bridge.js new-token` draws a new one. |
+| `hookTokens` | `{}` | Single player: `{ "<webhook id>": "<16 characters or more>" }`, a webhook with its own token, which then refuses `token`. |
+| `zomboidLuaDir` | `%USERPROFILE%/Zomboid/Lua` | Folder shared with the mod: the one of the game, or of the server in server mode (`<folder>/Lua` for a server started with `-cachedir=<folder>`). |
 | `jobTtlSeconds` | `900` | A job older than this is skipped by the game (900 at most: a larger value is brought back to 900, with a warning at the start). |
 | `httpAllowedHosts` | `["*.liberty-talk.com"]` | Hosts that `http` steps may call. |
 | `httpTargets` | `lt_report` with placeholders | `{ "<name>": { "url", "headers", "hmacSecret", "hmacHeader", "method" } }`: the address and the secrets of an `http` step that says `"target": "<name>"`. Only `url` is required. |
-| `settings` | `{"language": "en", "anonymousName": ""}`, `fr` when the regional format of Windows is French | Copied to `talky_config.json` on the first launch, then edited in F8 > Settings. |
+| `settings` | `{"language": "en", "anonymousName": ""}`, `fr` when the regional format of the system is French | Copied to `talky_config.json` on the first launch, then edited in F8 > Settings. |
 | `webhooks`, `workflows`, `gameEvents` | examples | Copied to `talky_config.json` on the first launch. |
-| `poll` | disabled | Experimental source without public address, see below. |
+| `poll` | disabled | Experimental source without public address, see below (single player only). |
 
-**Poll mode (experimental).** Instead of receiving webhooks, the bridge reads the LibertyTalk activity feed every `intervalSeconds` (10 s, 5 s at least) with an API token: `"url": "https://<tenant>.api.liberty-talk.com/community/<community_id>/activity?per_page=50"`, `"apiToken"`, optional `"headers"`. `types` maps an activity type to a workflow: `follow`, `subscribe`, `subscribe_gift`, `cheer`, `raid`, `donation`, `superchat`, `member` (`resub`, `member_gift`, `charity`, `boost` and `first_message` also exist). The bridge fills `user_name` from `actor_name`, `bits` (cheer), `viewers` (raid) and `total` (gifts) from `amount`. Events already in the feed when the bridge starts are not replayed.
+The streamers of server mode are in `bridge\streamers.json`, next to `config.json`: keep it with `config.json` when you move or update the bridge (without it, every streamer needs a new token).
+
+**Poll mode (experimental, single player).** Instead of receiving webhooks, the bridge reads the LibertyTalk activity feed every `intervalSeconds` (10 s, 5 s at least) with an API token: `"url": "https://<tenant>.api.liberty-talk.com/community/<community_id>/activity?per_page=50"`, `"apiToken"`, optional `"headers"`. `types` maps an activity type to a workflow: `follow`, `subscribe`, `subscribe_gift`, `cheer`, `raid`, `donation`, `superchat`, `member` (`resub`, `member_gift`, `charity`, `boost` and `first_message` also exist). The bridge fills `user_name` from `actor_name`, `bits` (cheer), `viewers` (raid) and `total` (gifts) from `amount`. Events already in the feed when the bridge starts are not replayed.
 
 ## Development
 
-- Bridge tests: `cd bridge`, then `npm test` (Node 18 or later, no dependencies). They start real bridges on free ports with a temporary game folder.
-- Lua tests: `powershell -ExecutionPolicy Bypass -File tools\test-lua.ps1 -GameDir "<path to ProjectZomboid>"` (JDK 25 or later: the classes of game 42.21 are Java 25 classes; `-Java "<path to java.exe>"` picks another JDK). They compile every file with the Kahlua of the game jar, then run the mod with fake game objects, one Lua state per game process: a single player game, a dedicated server with several clients and a hosted game. Messages between processes are copied by the game's own network serializer. Covered: every page of the F8 window in English and French, translation keys, sandbox options, caps, permissions, acks, name tags, events back to the bridge. For a dedicated server installed alone, `-GameDir` can be its `java` folder.
+- Bridge tests: `node bridge/test/run-tests.mjs` (or `npm test` in `bridge`; Node 18 or later, no dependencies). They start real bridges, in solo and in server mode, on free ports with a temporary game folder.
+- Lua tests: `& tools\test-lua.ps1` in PowerShell, from the Talky folder (`-GameDir "<path to ProjectZomboid>"` when the game is not found; JDK 25 or later: the classes of game 42.21 are Java 25 classes; `-Java "<path to java.exe>"` picks another JDK). They compile every file with the Kahlua of the game jar, then run the mod with fake game objects, one Lua state per game process: a single player game, a dedicated server with several clients and a hosted game. Messages between processes are copied by the game's own network serializer. Covered: every page of the F8 window in English and French, for an admin and for a player, translation keys, sandbox options, caps, the streamer list, the routing of the jobs to their streamer, offline streamers, acks, name tags, events for the bridge. For a dedicated server installed alone, `-GameDir` can be its `java` folder.
 - Steam Workshop folder: `tools\build-workshop.ps1` assembles `%USERPROFILE%\Zomboid\Workshop\Talky` (`-OutDir` to build it elsewhere), keeps the Workshop `id=` after the first upload and refuses the file types the Workshop rejects. Then, in the game: **Workshop > Create and update items**.
-- Release: `tools\build-release.ps1` builds `dist\Talky-<version>-windows.zip` and `dist\SHA256SUMS.txt`. The version of `bridge\package.json` must match `modversion` in `mod.info`.
+- Release: `tools\build-release.ps1` builds `dist\Talky-<version>.zip` (Windows and Linux) and `dist\SHA256SUMS.txt`. The version of `bridge\package.json` must match `modversion` in `mod.info`.
 - `mod\Talky\42\poster.png` and `packaging\workshop\preview.png` are provisional images drawn by `tools\make-placeholder-images.ps1`.
 - Translations: `mod\Talky\42\media\lua\shared\Translate\<LANG>\UI.json` (keys `UI_Talky_*`, the same keys in every language), `Sandbox.json` (the server options of `media\sandbox-options.txt`, keys `Sandbox_Talky_*`) and `Mod.json` (name and description of the mod).
-- Code layout: `media\lua\client` runs only in the player's game, `media\lua\server` on the server and in single player, `media\lua\shared` everywhere. The server files never require a `client` file and never read or write files.
+- Code layout: `media\lua\client` runs only in the player's game, `media\lua\server` on the server and in single player, `media\lua\shared` everywhere. The server files never require a `client` file; only `server\Talky\Talky_Files.lua` opens files (the bridge's files, in `Zomboid\Lua`). `server\Talky\Talky_Inbox.lua` reads the jobs, `Talky_Streamers.lua` the streamer list, `Talky_Server.lua` answers the clients, `Talky_ServerRunner.lua` runs the jobs. `client\Talky\Talky_Remote.lua` is what the F8 window asks the server in multiplayer.
 
 ## License
 

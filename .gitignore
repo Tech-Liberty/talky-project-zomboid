@@ -1,6 +1,7 @@
 # Secrets and state of a local bridge: never committed
 bridge/config.json
 bridge/bridge-state.json
+bridge/streamers.json
 
 node_modules/
 dist/

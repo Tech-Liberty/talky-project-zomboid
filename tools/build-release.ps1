@@ -1,14 +1,16 @@
 <#
 .SYNOPSIS
-  Builds the GitHub release archive: dist\Talky-<version>-windows.zip and dist\SHA256SUMS.txt.
+  Builds the GitHub release archive: dist\Talky-<version>.zip and dist\SHA256SUMS.txt.
 
 .DESCRIPTION
-  Archive content (at the root of the zip):
-    Talky\            the mod, for a manual install in %USERPROFILE%\Zomboid\mods
+  Archive content (at the root of the zip), the same for Windows and Linux:
+    Talky\            the mod, for a manual install in Zomboid\mods
     bridge\           bridge.js, lib\, locales\, config.example.json, package.json
-                      (never config.json nor bridge-state.json: the bridge creates
-                      config.json on its first start)
-    start-bridge.cmd, README.md, README.fr.md, LICENSE, CHANGELOG.md
+                      (never config.json, bridge-state.json nor streamers.json: the bridge
+                      creates config.json on its first start)
+    start-bridge.cmd  (Windows; "start-bridge.cmd server" for server mode)
+    start-bridge.sh   (Linux, server mode), talky-bridge.service (example systemd unit)
+    README.md, README.fr.md, LICENSE, CHANGELOG.md
 
   The version comes from bridge\package.json and must match modversion in mod.info.
 
@@ -59,15 +61,16 @@ function Add-Tree([string]$sourceDir, [string]$prefix, [string[]]$excludeNames, 
 }
 
 Add-Tree (Join-Path $root 'mod\Talky') 'Talky/' @() @()
-Add-Tree (Join-Path $root 'bridge') 'bridge/' @('config.json', 'bridge-state.json') @('node_modules', 'test')
-foreach ($f in @('start-bridge.cmd', 'README.md', 'README.fr.md', 'LICENSE', 'CHANGELOG.md')) {
+Add-Tree (Join-Path $root 'bridge') 'bridge/' @('config.json', 'bridge-state.json', 'streamers.json') @('node_modules', 'test')
+foreach ($f in @('start-bridge.cmd', 'start-bridge.sh', 'README.md', 'README.fr.md', 'LICENSE', 'CHANGELOG.md')) {
     Add-Entry (Join-Path $root $f) $f
 }
+Add-Entry (Join-Path $root 'packaging\linux\talky-bridge.service') 'talky-bridge.service'
 
 # ---------------------------------------------------------------- zip
 
 New-Item -ItemType Directory -Force $OutDir | Out-Null
-$zipName = "Talky-$version-windows.zip"
+$zipName = "Talky-$version.zip"
 $zipPath = Join-Path $OutDir $zipName
 if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
 
@@ -90,10 +93,10 @@ try {
 } finally {
     $check.Dispose()
 }
-foreach ($required in @('Talky/42/mod.info', 'Talky/42/poster.png', 'bridge/bridge.js', 'bridge/config.example.json', 'bridge/package.json', 'start-bridge.cmd', 'README.md', 'README.fr.md', 'LICENSE')) {
+foreach ($required in @('Talky/42/mod.info', 'Talky/42/poster.png', 'bridge/bridge.js', 'bridge/config.example.json', 'bridge/package.json', 'start-bridge.cmd', 'start-bridge.sh', 'talky-bridge.service', 'README.md', 'README.fr.md', 'LICENSE')) {
     if ($names -notcontains $required) { Fail "$required is missing from the archive" }
 }
-foreach ($secret in @('bridge/config.json', 'bridge/bridge-state.json')) {
+foreach ($secret in @('bridge/config.json', 'bridge/bridge-state.json', 'bridge/streamers.json')) {
     if ($names -contains $secret) { Fail "$secret must never be in the archive" }
 }
 if ($names | Where-Object { $_ -like '*.ps1' }) { Fail 'the archive must not contain PowerShell scripts (the bridge sets itself up on its first start)' }

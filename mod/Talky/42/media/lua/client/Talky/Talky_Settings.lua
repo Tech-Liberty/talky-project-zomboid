@@ -1,19 +1,33 @@
--- talky_config.json: webhooks, workflows, game events and in-game settings.
--- The window edits it, the bridge watches it and reloads on save.
--- talky_status.json: heartbeat the bridge writes every 2 s (alive, port, test code, ids of the
--- webhooks with a dedicated token, recent events). No token: every mod can read the file.
+-- talky_config.json: webhooks, workflows, game events and the settings of the bridge.
+--   single player : the file of this game. The window edits it, the bridge watches it and
+--                   reloads on save. talky_status.json is the heartbeat the bridge writes every
+--                   2 s (alive, port, test code, ids of the webhooks with a dedicated token,
+--                   recent events; no token: every mod can read the file).
+--   multiplayer   : the server's file, next to the bridge. An admin's window loads it from the
+--                   server and saves it there (Talky_Remote); the bridge's state comes from the
+--                   server too. This player's display settings (names above zombies, banners)
+--                   stay here, in talky_client.json.
 
 require "Talky/Talky_Json"
 require "Talky/Talky_Config"
 require "Talky/Talky_Text"
 require "Talky/Talky_Net"
 require "Talky/Talky_Bridge"
+require "Talky/Talky_Remote"
 
 Talky_Settings = {
     data = nil,
+    prefs = nil,       -- multiplayer: { settings = { display keys } } of talky_client.json
     status = nil,
     statusReadAt = 0,
 }
+
+-- Settings that only change this player's screen (multiplayer: talky_client.json).
+local DISPLAY = { showNameTags = true, nameTagRange = true, toastSeconds = true, toastY = true }
+Talky_Settings.DISPLAY = DISPLAY
+
+local function mp() return TalkyNet.mode() == "client" end
+Talky_Settings.mp = mp
 
 local function readText(name)
     local lines = Talky_Bridge.readLines(name)
@@ -25,7 +39,22 @@ local function defaults()
     return { publicUrl = "", webhooks = {}, workflows = {}, gameEvents = {}, settings = {} }
 end
 
+local function loadPrefs()
+    local text = readText(Talky_Config.clientFile)
+    local p = text and TalkyJson.tryDecode(text)
+    if type(p) ~= "table" then p = {} end
+    if type(p.settings) ~= "table" then p.settings = {} end
+    Talky_Settings.prefs = p
+end
+
 function Talky_Settings.load()
+    if mp() then
+        loadPrefs()
+        Talky_Settings.data = Talky_Remote.config
+        if Talky_Remote.isAdmin() and Talky_Remote.configState == "none" then Talky_Remote.askConfig() end
+        Talky_Settings.apply()
+        return Talky_Settings.data
+    end
     local data
     local text = readText(Talky_Config.configFile)
     if text and text ~= "" then
@@ -42,28 +71,56 @@ function Talky_Settings.load()
     return data
 end
 
+-- The window can edit the configuration: always in single player; in multiplayer, an admin
+-- whose copy of the server's configuration arrived.
+function Talky_Settings.ready()
+    if not mp() then return true end
+    return Talky_Remote.isAdmin() and Talky_Remote.configState == "ready" and Talky_Remote.config ~= nil
+end
+
 -- Values from the file are clamped to the bounds of the window (the file can be edited by hand).
+-- Multiplayer: the display settings of talky_client.json only (the caps are the server's).
 function Talky_Settings.apply()
-    local s = Talky_Settings.data and Talky_Settings.data.settings or {}
+    local s
+    if mp() then
+        s = Talky_Settings.prefs and Talky_Settings.prefs.settings or {}
+    else
+        s = Talky_Settings.data and Talky_Settings.data.settings or {}
+    end
     if type(s) ~= "table" then return end
     for _, opt in ipairs(Talky_Config.editable) do
-        local v = s[opt.key]
-        if opt.type == "number" then
-            v = TalkyNet.num(v, nil, opt.min or -1000000, opt.max or 1000000)
-        elseif opt.type == "bool" then
-            if type(v) ~= "boolean" then v = nil end
-        elseif opt.type == "text" then
-            v = TalkyNet.str(v, opt.maxLength or 40, nil)
-        elseif opt.type == "choice" then
-            local found = false
-            for _, c in ipairs(opt.choices) do if c[2] == v then found = true end end
-            if not found then v = nil end
+        if not mp() or DISPLAY[opt.key] then
+            local v = s[opt.key]
+            if opt.type == "number" then
+                v = TalkyNet.num(v, nil, opt.min or -1000000, opt.max or 1000000)
+            elseif opt.type == "bool" then
+                if type(v) ~= "boolean" then v = nil end
+            elseif opt.type == "text" then
+                v = TalkyNet.str(v, opt.maxLength or 40, nil)
+            elseif opt.type == "choice" then
+                local found = false
+                for _, c in ipairs(opt.choices) do if c[2] == v then found = true end end
+                if not found then v = nil end
+            end
+            if v ~= nil then Talky_Config[opt.key] = v end
         end
-        if v ~= nil then Talky_Config[opt.key] = v end
     end
 end
 
+-- Single player: writes talky_config.json. Multiplayer: this player's display settings here,
+-- and the configuration to the server (admins). Returns ok, reason.
 function Talky_Settings.save()
+    if mp() then
+        local p = Talky_Settings.prefs or { settings = {} }
+        local w = getFileWriter(Talky_Config.clientFile, true, false)
+        if w then
+            w:write(TalkyJson.encode(p, "  "))
+            w:close()
+        end
+        Talky_Settings.apply()
+        if Talky_Settings.ready() then return Talky_Remote.saveConfig(Talky_Settings.data) end
+        return w ~= nil, w == nil and "error" or nil
+    end
     local w = getFileWriter(Talky_Config.configFile, true, false)
     if not w then return false end
     w:write(TalkyJson.encode(Talky_Settings.data, "  "))
@@ -73,11 +130,39 @@ function Talky_Settings.save()
 end
 
 function Talky_Settings.get()
+    if mp() then
+        if Talky_Settings.ready() then
+            Talky_Settings.data = Talky_Remote.config
+            return Talky_Settings.data
+        end
+        -- nothing to edit yet: an empty configuration, never saved
+        return defaults()
+    end
     return Talky_Settings.data or Talky_Settings.load()
 end
 
--- Returns status table (or nil) and whether the bridge is alive.
+-- The table the Settings page edits for one option: the display settings of this player in
+-- multiplayer, the bridge's settings otherwise.
+function Talky_Settings.settingsFor(key)
+    if mp() and DISPLAY[key] then
+        Talky_Settings.prefs = Talky_Settings.prefs or { settings = {} }
+        return Talky_Settings.prefs.settings
+    end
+    local d = Talky_Settings.get()
+    if type(d.settings) ~= "table" then d.settings = {} end
+    return d.settings
+end
+
+-- Returns status table (or nil) and whether the bridge is alive. Multiplayer: what the server
+-- says of the bridge next to it.
 function Talky_Settings.readStatus()
+    if mp() then
+        local s = Talky_Remote.status
+        if not s then return nil, false end
+        local b = s.bridge
+        return { port = b.port, version = b.version ~= "" and b.version or nil, pending = b.pending, protocol = b.protocol,
+                 mode = b.mode, publicUrl = b.publicUrl, recent = s.recent }, b.alive == true
+    end
     local now = getTimestampMs()
     if now - Talky_Settings.statusReadAt > 1000 then
         Talky_Settings.statusReadAt = now
@@ -122,7 +207,38 @@ function Talky_Settings.hasDedicatedToken(id)
     return false
 end
 
-local function sortedKeys(t)
+-- Server mode: the address the streamers' widgets call, from what the admin typed:
+-- "203.0.113.5" -> "http://203.0.113.5:7420" (http, and the bridge's port, when no scheme is
+-- given); "https://talky.example.com/" -> "https://talky.example.com" (a reverse proxy: kept as
+-- typed). nil when empty or not http(s).
+function Talky_Settings.normalizeAddress(text, port)
+    if type(text) ~= "string" then return nil end
+    local s = string.match(text, "^%s*(.-)%s*$") or ""
+    s = string.gsub(s, "/+$", "")
+    if s == "" or string.find(s, "[%s%c\"'<>]") then return nil end
+    local scheme = string.match(s, "^(%a[%w+.%-]*)://")
+    if scheme then
+        scheme = string.lower(scheme)
+        if scheme ~= "http" and scheme ~= "https" then return nil end
+        if not string.match(s, "^%a[%w+.%-]*://[^/?#]+") then return nil end
+        return s
+    end
+    if not string.find(s, "/") and not string.match(s, ":%d+$") then s = s .. ":" .. tostring(port or 7420) end
+    return "http://" .. s
+end
+
+-- Server mode: the address of the bridge, as the streamers' widgets call it, or nil.
+function Talky_Settings.streamerAddress()
+    local port = 7420
+    local r = Talky_Remote.streamers
+    if r then port = r.port end
+    local typed = Talky_Settings.ready() and Talky_Settings.get().publicUrl or nil
+    if type(typed) ~= "string" or typed == "" then typed = r and r.publicUrl or "" end
+    if typed == "" and Talky_Remote.status then typed = Talky_Remote.status.bridge.publicUrl end
+    return Talky_Settings.normalizeAddress(typed, port)
+end
+
+local sortedKeys = function(t)
     local keys = {}
     for k in pairs(t or {}) do keys[#keys + 1] = k end
     table.sort(keys)
@@ -138,20 +254,25 @@ function Talky_Settings.webhookIds()
     return sortedKeys(Talky_Settings.get().webhooks)
 end
 
--- Asks the bridge to run a workflow as if a webhook had arrived. The bridge only accepts it
--- with the test code it wrote in talky_status.json at its start (testNonce), read fresh here.
+-- Asks the bridge to run a workflow as if a webhook had arrived. Single player: the bridge only
+-- accepts it with the test code it wrote in talky_status.json at its start (testNonce), read
+-- fresh here. Multiplayer (admins): the server writes it, for this player's character.
 function Talky_Settings.testWorkflow(name, vars)
+    vars = vars or { user = Talky_T("Wf_TestUser") }
+    if mp() then return Talky_Remote.test(name, vars) end
     Talky_Settings.statusReadAt = 0
     local st = Talky_Settings.readStatus()
     local nonce = st and TalkyNet.str(st.testNonce, 128, nil) or nil
-    Talky_Bridge.emit("test_workflow", { workflow = name, vars = vars or { user = Talky_T("Wf_TestUser") }, nonce = nonce })
+    return Talky_Bridge.emit("test_workflow", { workflow = name, vars = vars, nonce = nonce })
 end
 
--- Bridge older than 0.4.0: it reads talky_outbox.jsonl only and knows no test code.
+-- A bridge too old for this mode: single player, older than 0.4.0 (it reads
+-- talky_outbox.jsonl only and knows no test code); multiplayer, older than 0.5.0 (no server mode).
 function Talky_Settings.bridgeTooOld()
     local st, alive = Talky_Settings.readStatus()
     if not alive or type(st) ~= "table" then return false end
-    return (TalkyNet.num(st.protocol, 1, 0, 1000000)) < 2
+    local need = mp() and Talky_Config.bridgeProtocol or 2
+    return (TalkyNet.num(st.protocol, 1, 0, 1000000)) < need
 end
 
 Events.OnGameStart.Add(Talky_Settings.load)

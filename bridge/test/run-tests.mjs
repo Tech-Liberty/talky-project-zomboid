@@ -7,8 +7,12 @@
 // job_rejected, errors of game workflows, UTF-8 bodies, ~ in messages,
 // config.json created on the first start (token never printed, never replaced), startup
 // warnings. Secrets stay in config.json: no token in talky_status.json, dedicated webhook
-// tokens from "hookTokens" only, http secrets from "httpTargets", CLI url / new-token. TALKY_TEST_TMP=<dir> chooses where the temporary folders go (default:
-// os.tmpdir()). The tests never touch the clipboard (TALKY_NO_CLIPBOARD).
+// tokens from "hookTokens" only, http secrets from "httpTargets", CLI url / new-token.
+// Server mode (--server, "mode": "server"): the streamers and their tokens drawn by the bridge
+// (streamer_add / streamer_token / streamer_remove of the outbox), the token of a call naming
+// the target of its job, game events for their streamer, old events skipped.
+// TALKY_TEST_TMP=<dir> chooses where the temporary folders go (default: os.tmpdir()). The
+// tests never touch the clipboard (TALKY_NO_CLIPBOARD).
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -113,8 +117,8 @@ function mergeEnv(extra) {
   return { ...env, ...extra };
 }
 
-function startBridge(configPath, extraEnv = {}) {
-  const child = spawn(process.execPath, [bridgeJs], {
+function startBridge(configPath, extraEnv = {}, args = []) {
+  const child = spawn(process.execPath, [bridgeJs, ...args], {
     env: mergeEnv({ LT_BRIDGE_CONFIG: configPath, ...extraEnv }),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -182,10 +186,10 @@ async function captureLog(fn) {
 
 console.log('unit');
 
-await t('version is 0.4.0 everywhere in the bridge, file protocol 2', () => {
-  assert.equal(pkg.version, '0.4.0');
-  assert.equal(bridgeModule.VERSION, '0.4.0');
-  assert.equal(bridgeModule.PROTOCOL, 2);
+await t('version is 0.5.0 everywhere in the bridge, file protocol 3', () => {
+  assert.equal(pkg.version, '0.5.0');
+  assert.equal(bridgeModule.VERSION, '0.5.0');
+  assert.equal(bridgeModule.PROTOCOL, 3);
   assert.equal(pkg.name, 'talky-bridge');
   assert.equal(pkg.engines.node, '>=18');
 });
@@ -632,13 +636,13 @@ await t('job_rejected / job_expired: console line and Status page entry, never a
   await captureLog(() => b.runWorkflow('w', b.varsFor({ user_name: 'Viewer1' }), 'hook:follow'));
   const seq = b.link.state.pending[0].seq;
   let res;
-  let out = await captureLog(async () => { res = await b.handleGameEvent({ event: 'job_rejected', data: { seq, workflow: 'forged', reason: 'not_allowed' } }); });
-  assert.deepEqual(res, { event: 'job_rejected', job: seq, rejected: 'not_allowed' });
+  let out = await captureLog(async () => { res = await b.handleGameEvent({ event: 'job_rejected', data: { seq, workflow: 'forged', reason: 'not_streamer' } }); });
+  assert.deepEqual(res, { event: 'job_rejected', job: seq, rejected: 'not_streamer' });
   assert.equal(out.split('\n').length, 1, out);
-  assert.ok(out.includes(`[game] job #${seq} (w) refused by the server: not_allowed - this player may not use Talky on this server. A server admin adds the username to the sandbox option Talky.AllowedPlayers`), out);
+  assert.ok(out.includes(`[game] job #${seq} (w) refused by the server: not_streamer - the job names no streamer of this server: the streamer was removed in F8 > Webhooks, or the bridge runs in solo mode next to a server`), out);
   assert.deepEqual({ ...b.recent[0], at: undefined }, {
-    at: undefined, source: 'game:job_rejected', workflow: 'w', user: 'Viewer1', job: seq, rejected: 'not_allowed',
-    error: 'refused by the server: not_allowed',
+    at: undefined, source: 'game:job_rejected', workflow: 'w', user: 'Viewer1', job: seq, rejected: 'not_streamer',
+    error: 'refused by the server: not_streamer',
   }, 'workflow and viewer as the bridge recorded them');
   // Odd text from the game: no control character reaches the console, unknown reasons stay codes
   out = await captureLog(() => b.handleGameEvent({ event: 'job_rejected', data: { seq: 999, workflow: 'a\nb', reason: 'Boom\n12:00:00 [Talky] fake' } }));
@@ -648,13 +652,9 @@ await t('job_rejected / job_expired: console line and Status page entry, never a
   out = await captureLog(() => b.handleGameEvent({ event: 'job_rejected', data: { seq: 'x', reason: 'constructor' } }));
   assert.match(out, /\[game\] job refused by the server: constructor - see the \[Talky\] lines/, 'no hint from Object.prototype');
   assert.equal(b.recent[0].job, undefined);
-  for (const r of ['not_allowed', 'invalid', 'duplicate', 'unknown_action', 'disabled', 'expired', 'too_large']) assert.equal(typeof bridgeModule.REJECT_HINTS[r], 'string', r);
-  // too_large: refused by the game of this PC (it cannot be sent), not by the server
-  out = await captureLog(() => b.handleGameEvent({ event: 'job_rejected', data: { seq, workflow: 'w', reason: 'too_large' } }));
-  assert.equal(out.split('\n').length, 1, out);
-  assert.ok(out.includes(`[game] job #${seq} (w) not sent to the server: too_large - the job is too large for one network message of the game, so the game on this PC did not send it to the server. Give the workflow fewer steps`), out);
-  assert.equal(b.recent[0].rejected, 'too_large');
-  assert.equal(b.recent[0].error, 'not sent to the server: too_large');
+  for (const r of ['not_streamer', 'invalid', 'unknown_action', 'disabled', 'expired']) assert.equal(typeof bridgeModule.REJECT_HINTS[r], 'string', r);
+  // the reasons of the 0.4.0 relay are gone (no job crosses the network any more)
+  for (const r of ['not_allowed', 'duplicate', 'too_large']) assert.equal(bridgeModule.REJECT_HINTS[r], undefined, r);
   // Expired
   out = await captureLog(async () => { res = await b.handleGameEvent({ event: 'job_expired', data: { seq, workflow: 'w' } }); });
   assert.equal(res.rejected, 'expired');
@@ -690,8 +690,10 @@ await t('talky_status.json: protocol, testNonce and session for the F8 window', 
   b.link.state.session = '0123456789abcdef';
   b.writeStatus();
   const st = JSON.parse(fs.readFileSync(path.join(dir, 'talky_status.json'), 'utf8'));
-  assert.equal(st.version, '0.4.0');
-  assert.equal(st.protocol, 2);
+  assert.equal(st.version, '0.5.0');
+  assert.equal(st.protocol, 3);
+  assert.equal(st.mode, 'solo');
+  assert.equal(st.streamers, undefined, 'solo mode: no streamer count');
   assert.equal(st.testNonce, b.testNonce);
   assert.equal(st.session, '0123456789abcdef');
   assert.equal(st.lastAck, 0);
@@ -724,7 +726,7 @@ await t('stop: the last talky_status.json has no test code and shows the bridge 
   assert.equal(st.ts, 0);
   assert.equal(st.stopped, true);
   assert.equal(st.testNonce, undefined);
-  assert.equal(st.version, '0.4.0');
+  assert.equal(st.version, '0.5.0');
   assert.equal(st.session, running.session);
   b.stop(); // twice: nothing written again, no error
   await b.link.writing;
@@ -893,7 +895,7 @@ await t('webhookUrl: public URL of the game file, dedicated token, masked form; 
   assert.match(w(cfg, game, 'constructor').error, /^Unknown webhook "constructor"/);
   assert.match(w(cfg, game, undefined).error, /^Usage: node bridge\.js url <webhook> \[--show\] \[--base <public URL>\]\. Webhooks: a, b, x y$/);
   assert.match(w(cfg, game, 'a', { base: 'nope' }).error, /^The public URL "nope" \(command line\) is not a URL/);
-  assert.equal(w(cfg, game, 'a', { base: 'javascript:alert(1)' }).error, 'The public URL (command line) must start with https://.');
+  assert.equal(w(cfg, game, 'a', { base: 'javascript:alert(1)' }).error, 'The public URL (command line) must start with https:// or http://.');
 });
 
 await t('jobTtl: missing = 900 s, above 900 s or not a number = 900 s with a warning (the mod drops a job 15 minutes after its creation)', () => {
@@ -957,7 +959,11 @@ await t('newConfigText: token and language swapped in, the rest of config.exampl
   assert.ok(!out.includes('change-me'));
   // An example without the placeholder nor the language line (and with a BOM): rebuilt
   const rebuilt = JSON.parse(bridgeModule.newConfigText('﻿{"port": 1, "settings": {"anonymousName": ""}}', token, 'en'));
-  assert.deepEqual(rebuilt, { port: 1, token, settings: { anonymousName: '', language: 'en' } });
+  assert.deepEqual(rebuilt, { port: 1, mode: 'solo', token, settings: { anonymousName: '', language: 'en' } });
+  // server mode: the "mode" line of the example, the rest kept
+  const server = JSON.parse(bridgeModule.newConfigText(exampleText, token, 'en', 'server'));
+  assert.equal(server.mode, 'server');
+  assert.deepEqual({ ...server, mode: 'solo', token: example.token }, example);
 });
 
 await t('createConfig: 48 hex characters, no BOM, an existing file is never replaced', () => {
@@ -1025,6 +1031,243 @@ await t('startup warnings: cloudflared missing, Talky installed twice, bridge fo
   assert.equal(w.length, 2, w.join('\n'));
   assert.match(w[1], /^The bridge folder .* is inside .*mods, the folder of the game's mods: .*Documents\\Talky/);
   assert.equal(run({ bridgeDirs: [path.join(zomboid, 'mods-old', 'bridge')] }).length, 1, 'a sibling folder is not inside');
+});
+
+// ------------------------------------------------------------------ server mode (unit)
+
+console.log('server mode');
+
+await t('server mode helpers: listen address, --server / --solo, name key, usernames', () => {
+  const { listenHost, modeFlag, nameKey, streamerName } = bridgeModule;
+  assert.equal(listenHost({ mode: 'server' }), '0.0.0.0');
+  assert.equal(listenHost({ mode: 'server', host: '' }), '0.0.0.0');
+  assert.equal(listenHost({ mode: 'solo' }), '127.0.0.1');
+  assert.equal(listenHost({ mode: 'solo', host: ' ' }), '127.0.0.1');
+  assert.equal(listenHost({ mode: 'server', host: '127.0.0.1' }), '127.0.0.1', 'an explicit host wins (reverse proxy)');
+  assert.deepEqual(modeFlag(['--server']), { mode: 'server', args: [] });
+  assert.deepEqual(modeFlag(['fire', 'w', '--solo', 'user=Bob']), { mode: 'solo', args: ['fire', 'w', 'user=Bob'] });
+  assert.deepEqual(modeFlag([]), { mode: undefined, args: [] });
+  assert.equal(nameKey('BoB Zoé ÉRIC'), 'bob zoé Éric', 'A-Z only, like the accounts of the game');
+  assert.equal(streamerName('  Big Boss '), 'Big Boss');
+  for (const bad of ['', '   ', 'a\nb', 'x'.repeat(65), 42, null, undefined, {}]) assert.equal(streamerName(bad), null, String(bad));
+  assert.equal(streamerName('x'.repeat(64)), 'x'.repeat(64));
+  assert.deepEqual([...bridgeModule.STREAMER_EVENTS].sort(), ['streamer_add', 'streamer_remove', 'streamer_token']);
+});
+
+// A server mode Bridge that never listens, its streamer file in dir too.
+async function serverBridgeIn(dir, game, extra = {}) {
+  const b = await bridgeIn(dir, game, { mode: 'server', ...extra });
+  b.streamersFile = path.join(dir, 'streamers.json');
+  b.loadStreamers();
+  return b;
+}
+const mirrorOf = (dir) => JSON.parse(fs.readFileSync(path.join(dir, 'talky_streamers.json'), 'utf8'));
+
+await t('server mode: streamer_add / streamer_token / streamer_remove from the outbox; the bridge draws the tokens, writes both files, never prints a token', async () => {
+  const dir = path.join(unitTmp, 'streamers');
+  const b = await serverBridgeIn(dir, { workflows: { w: { steps: [{ action: 'notify', text: 'x' }] } }, gameEvents: { streamer_add: 'w', streamer_remove: 'w' } });
+  let res;
+  let out = await captureLog(async () => { res = await b.handleGameEvent({ event: 'streamer_add', data: { name: '  Alice ', by: 'Boss' } }); });
+  assert.deepEqual(res, { event: 'streamer_add', name: 'Alice' });
+  assert.equal(b.streamers.length, 1);
+  const tokA = b.streamers[0].token;
+  assert.match(tokA, /^[0-9a-f]{48}$/);
+  assert.match(out, /\[game\] streamer "Alice" added by Boss: their token is shown in F8 > Webhooks, to admins only/);
+  assert.ok(!out.includes(tokA), 'never printed');
+  const saved = JSON.parse(fs.readFileSync(b.streamersFile, 'utf8'));
+  assert.deepEqual(saved.streamers.map((s) => [s.name, s.token]), [['Alice', tokA]]);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(b.streamersFile).mode & 0o777, 0o600, 'bridge/streamers.json readable by its owner only');
+  assert.deepEqual(mirrorOf(dir).streamers.map((s) => [s.name, s.token]), [['Alice', tokA]], 'copy for the server code in Zomboid/Lua');
+  assert.equal(mirrorOf(dir).rev, saved.rev);
+  // the same name in another A-Z case: one streamer
+  out = await captureLog(async () => { res = await b.handleGameEvent({ event: 'streamer_add', data: { name: 'ALICE', by: 'Boss' } }); });
+  assert.equal(res.skipped, 'exists');
+  assert.equal(b.streamers.length, 1);
+  // unreadable names
+  for (const name of ['', 'a\nb', 'x'.repeat(65), 42]) {
+    out = await captureLog(async () => { res = await b.handleGameEvent({ event: 'streamer_add', data: { name, by: 'Boss' } }); });
+    assert.equal(res.skipped, 'bad name', JSON.stringify(name));
+  }
+  // a new token
+  out = await captureLog(async () => { res = await b.handleGameEvent({ event: 'streamer_token', data: { name: 'alice', by: 'Boss' } }); });
+  const tokA2 = b.streamers[0].token;
+  assert.notEqual(tokA2, tokA);
+  assert.match(out, /new token for streamer "Alice" \(asked by Boss\): the old one no longer works/);
+  assert.ok(!out.includes(tokA2) && !out.includes(tokA));
+  assert.equal(b.streamerForToken(tokA), null, 'the old token opens nothing');
+  assert.equal(b.streamerForToken(tokA2).name, 'Alice');
+  assert.equal(mirrorOf(dir).streamers[0].token, tokA2);
+  // remove, unknown, never a workflow
+  out = await captureLog(async () => { res = await b.handleGameEvent({ event: 'streamer_remove', data: { name: 'Nobody', by: 'Boss' } }); });
+  assert.equal(res.skipped, 'unknown');
+  out = await captureLog(async () => { res = await b.handleGameEvent({ event: 'streamer_remove', data: { name: 'Alice', by: 'Boss' } }); });
+  assert.deepEqual(b.streamers, []);
+  assert.deepEqual(mirrorOf(dir).streamers, []);
+  assert.equal(b.streamerForToken(tokA2), null);
+  assert.equal(b.link.state.pending.length, 0, 'a streamer request never runs a gameEvents workflow');
+  // the list is capped
+  for (let i = 0; i < bridgeModule.MAX_STREAMERS; i++) await captureLog(() => b.handleGameEvent({ event: 'streamer_add', data: { name: `s${i}`, by: 'Boss' } }));
+  out = await captureLog(async () => { res = await b.handleGameEvent({ event: 'streamer_add', data: { name: 'one too many', by: 'Boss' } }); });
+  assert.equal(res.skipped, 'full');
+  assert.equal(b.streamers.length, bridgeModule.MAX_STREAMERS);
+  await b.link.writing;
+});
+
+await t('server mode: the tokens come from bridge/streamers.json only (a token planted in Zomboid/Lua opens nothing)', async () => {
+  const dir = path.join(unitTmp, 'streamers-load');
+  fs.mkdirSync(dir, { recursive: true });
+  const good = 'ab'.repeat(24);
+  fs.writeFileSync(path.join(dir, 'streamers.json'), JSON.stringify({ rev: 7, streamers: [
+    { name: 'Alice', token: good, createdAt: 1 }, { name: 'alice', token: 'cd'.repeat(24) }, { name: 'Bad', token: 'not hex' }, { token: good }, 'junk',
+  ] }));
+  const planted = 'ef'.repeat(24);
+  fs.writeFileSync(path.join(dir, 'talky_streamers.json'), JSON.stringify({ rev: 99, streamers: [{ name: 'Mallory', token: planted }] }));
+  const b = await serverBridgeIn(dir, {});
+  assert.deepEqual(b.streamers.map((s) => s.name), ['Alice'], 'bad entries and a second Alice dropped');
+  assert.equal(b.streamersRev, 7);
+  assert.equal(b.streamerForToken(planted), null);
+  await captureLog(() => b.start());
+  b.stop();
+  assert.deepEqual(mirrorOf(dir).streamers.map((s) => s.name), ['Alice'], 'the copy in Zomboid/Lua is written again at start');
+  await b.link.writing;
+});
+
+await t('server mode: a streamer token names the target; the bridge token opens /fire only, with a streamer', async () => {
+  const dir = path.join(unitTmp, 'caller');
+  const b = await serverBridgeIn(dir, {});
+  await captureLog(() => b.handleGameEvent({ event: 'streamer_add', data: { name: 'Alice', by: 'Boss' } }));
+  const tok = b.streamers[0].token;
+  const req = (token) => ({ headers: token === undefined ? {} : { 'x-bridge-token': token } });
+  const u = new URL('http://localhost/hooks/follow');
+  assert.deepEqual(b.caller(req(tok), u, 'hooks', 'follow'), { ok: true, streamer: 'Alice' });
+  assert.deepEqual(b.caller(req(undefined), new URL(`http://localhost/hooks/follow?token=${tok}`), 'hooks', 'follow'), { ok: true, streamer: 'Alice' });
+  assert.deepEqual(b.caller(req('x'), u, 'hooks', 'follow'), { ok: false }, 'the bridge token names nobody: refused on /hooks');
+  assert.deepEqual(b.caller(req('nope'), u, 'hooks', 'follow'), { ok: false });
+  assert.deepEqual(b.caller(req(undefined), u, 'hooks', 'follow'), { ok: false });
+  assert.deepEqual(b.caller(req('x'), u, 'fire', 'w'), { ok: true, bridgeToken: true });
+  assert.deepEqual(b.caller(req(tok), u, 'fire', 'w'), { ok: true, streamer: 'Alice' });
+  // solo mode: the bridge token, as before
+  const solo = await bridgeIn(path.join(unitTmp, 'caller-solo'), {});
+  assert.deepEqual(solo.caller(req('x'), u, 'hooks', 'follow'), { ok: true });
+  assert.deepEqual(solo.caller(req(tok), u, 'hooks', 'follow'), { ok: false });
+  await b.link.writing;
+});
+
+await t('server mode: jobs carry the target; cooldowns per streamer; without a streamer the game steps are skipped, http and log still run', async () => {
+  const dir = path.join(unitTmp, 'target');
+  const b = await serverBridgeIn(dir, { workflows: {
+    cd: { cooldownSeconds: 60, steps: [{ action: 'notify', text: '{{user}} for {{streamer}}' }, { action: 'log', message: 'logged' }] },
+  } });
+  await captureLog(() => b.runWorkflow('cd', b.varsFor({ user_name: 'V1' }, { streamer: 'Alice' }), 'hook:follow', { target: 'Alice' }));
+  const jobs = () => b.link.state.pending;
+  assert.equal(jobs().length, 1);
+  assert.equal(jobs()[0].target, 'Alice');
+  assert.equal(jobs()[0].test, undefined);
+  assert.equal(jobs()[0].steps[0].text, 'V1 for Alice', '{{streamer}} in the templates');
+  let res;
+  await captureLog(async () => { res = await b.runWorkflow('cd', b.varsFor({ user_name: 'V2' }), 'hook:follow', { target: 'Alice' }); });
+  assert.equal(res.skipped, 'cooldown');
+  await captureLog(async () => { res = await b.runWorkflow('cd', b.varsFor({ user_name: 'V3' }), 'hook:follow', { target: 'Bob' }); });
+  assert.equal(typeof res.job, 'number', 'the cooldown of Alice does not hold Bob');
+  assert.equal(jobs()[1].target, 'Bob');
+  const out = await captureLog(async () => { res = await b.runWorkflow('cd', b.varsFor({ user_name: 'V4' }), 'game:game_started'); });
+  assert.equal(res.skipped, 'no streamer');
+  assert.equal(jobs().length, 2, 'no job without a target');
+  assert.match(out, /\[game:game_started\] cd: 1 game step\(s\) skipped, no streamer for this event \(server mode\)/);
+  await Promise.all([...b.pendingBridgeWork]);
+  assert.equal(b.recent[0].skipped, 'no streamer');
+  await b.link.writing;
+});
+
+await t('server mode: game events run their workflows for the streamer they name, a test for the admin who pressed it', async () => {
+  const dir = path.join(unitTmp, 'events-server');
+  const b = await serverBridgeIn(dir, {
+    workflows: { kill: { steps: [{ action: 'notify', text: '{{name}} ({{streamer}})' }] }, t1: { steps: [{ action: 'notify', text: 'test {{user}}' }] } },
+    gameEvents: { zombie_killed: 'kill', player_died: 'kill' },
+  });
+  await captureLog(() => b.handleGameEvent({ event: 'streamer_add', data: { name: 'Alice', by: 'Boss' } }));
+  await captureLog(() => b.handleGameEvent({ event: 'zombie_killed', data: { name: 'Zed', byPlayer: true, streamer: 'alice' } }));
+  const jobs = b.link.state.pending;
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].target, 'Alice', 'the name of the list');
+  assert.equal(jobs[0].steps[0].text, 'Zed (Alice)');
+  // a streamer since removed, or none: game steps skipped
+  await captureLog(() => b.handleGameEvent({ event: 'zombie_killed', data: { name: 'Zed', streamer: 'Mallory' } }));
+  await captureLog(() => b.handleGameEvent({ event: 'player_died', data: {} }));
+  assert.equal(jobs.length, 1);
+  // Test now of an admin who is not a streamer: marked as a test
+  await captureLog(() => b.handleGameEvent({ event: 'test_workflow', data: { workflow: 't1', vars: { user: 'Tess' }, nonce: b.testNonce, streamer: 'Boss' } }));
+  assert.equal(jobs.length, 2);
+  assert.equal(jobs[1].target, 'Boss');
+  assert.equal(jobs[1].test, true);
+  // ... and by a streamer: an ordinary job
+  await captureLog(() => b.handleGameEvent({ event: 'test_workflow', data: { workflow: 't1', nonce: b.testNonce, streamer: 'Alice' } }));
+  assert.equal(jobs[2].target, 'Alice');
+  assert.equal(jobs[2].test, undefined);
+  // without the test code of this start: nothing
+  await captureLog(() => b.handleGameEvent({ event: 'test_workflow', data: { workflow: 't1', nonce: 'forged', streamer: 'Boss' } }));
+  assert.equal(jobs.length, 3);
+  // job_rejected names the streamer
+  const out = await captureLog(() => b.handleGameEvent({ event: 'job_rejected', data: { seq: 77, workflow: 'w', reason: 'not_streamer', streamer: 'Alice' } }));
+  assert.match(out, /\[game\] job #77 \(w\) for Alice refused by the server: not_streamer - /);
+  assert.equal(b.recent[0].streamer, 'Alice');
+  await b.link.writing;
+});
+
+await t('solo mode: streamer requests are ignored (one warning), the inbox never gets a target', async () => {
+  const dir = path.join(unitTmp, 'solo-streamers');
+  const b = await bridgeIn(dir, { workflows: { w: { steps: [{ action: 'notify', text: 'x' }] } } });
+  b.streamersFile = path.join(dir, 'streamers.json');
+  let res;
+  let out = await captureLog(async () => { res = await b.handleGameEvent({ event: 'streamer_add', data: { name: 'Alice', by: 'Boss' } }); });
+  assert.equal(res.skipped, 'solo mode');
+  assert.match(out, /streamer_add ignored: the bridge runs in solo mode/);
+  out = await captureLog(() => b.handleGameEvent({ event: 'streamer_token', data: { name: 'Alice' } }));
+  assert.equal(out, '', 'once per start');
+  assert.equal(fs.existsSync(b.streamersFile), false);
+  assert.equal(fs.existsSync(path.join(dir, 'talky_streamers.json')), false);
+  await captureLog(() => b.runWorkflow('w', b.varsFor({}), 'hook:follow', { target: 'Alice' }));
+  assert.equal(b.link.state.pending[0].target, undefined);
+  await b.link.writing;
+});
+
+await t('server mode: talky_status.json says server mode and how many streamers, never a token', async () => {
+  const dir = path.join(unitTmp, 'status-server');
+  const b = await serverBridgeIn(dir, {});
+  await captureLog(() => b.handleGameEvent({ event: 'streamer_add', data: { name: 'Alice', by: 'Boss' } }));
+  b.writeStatus();
+  const text = fs.readFileSync(path.join(dir, 'talky_status.json'), 'utf8');
+  const st = JSON.parse(text);
+  assert.equal(st.mode, 'server');
+  assert.equal(st.protocol, 3);
+  assert.equal(st.streamers, 1);
+  assert.deepEqual(st.hookTokens, [], 'no dedicated webhook token in server mode');
+  assert.ok(!text.includes(b.streamers[0].token));
+  await b.link.writing;
+});
+
+await t('startup warnings in server mode: no tunnel needed; a loopback host, hookTokens and poll are reported', () => {
+  const root = path.join(unitTmp, 'warn-server');
+  const zomboid = path.join(root, 'Zomboid');
+  fs.mkdirSync(path.join(zomboid, 'Lua'), { recursive: true });
+  const run = (cfg) => bridgeModule.startupWarnings({ zomboidDir: zomboid, bridgeDirs: [path.join(root, 'talky', 'bridge')], env: { PATH: '' }, platform: 'linux', steamRoots: [], cfg });
+  assert.deepEqual(run({ mode: 'server', host: '' }), [], 'no cloudflared warning in server mode');
+  const w = run({ mode: 'server', host: '127.0.0.1', hookTokens: { a: 'x'.repeat(20) }, poll: { enabled: true } });
+  assert.equal(w.length, 3, w.join('\n'));
+  assert.match(w[0], /^server mode, but the bridge listens on 127\.0\.0\.1 only: LibertyTalk cannot reach it, unless a reverse proxy/);
+  assert.match(w[1], /^"hookTokens" of config\.json is ignored in server mode/);
+  assert.match(w[2], /^"poll" of config\.json is ignored in server mode/);
+  assert.match(run({ mode: 'solo', host: '127.0.0.1' })[0], /^cloudflared is not in the PATH/);
+});
+
+await t('webhookUrl in server mode: the token of the streamer named with --streamer', () => {
+  const cfg = { mode: 'server', port: 7420, token: 'main-token-0123456789', webhooks: {} };
+  const game = { publicUrl: 'http://203.0.113.5:7420', webhooks: { follow: {} } };
+  const w = bridgeModule.webhookUrl;
+  assert.match(w(cfg, game, 'follow').error, /^Server mode: add --streamer <username>/);
+  const r = w(cfg, game, 'follow', { streamer: { name: 'Alice', token: 'ab'.repeat(24) } });
+  assert.equal(r.url, `http://203.0.113.5:7420/hooks/follow?token=${'ab'.repeat(24)}`);
+  assert.equal(r.tokenName, 'the token of streamer "Alice" (bridge/streamers.json)');
 });
 
 fs.rmSync(unitTmp, { recursive: true, force: true });
@@ -1095,7 +1338,9 @@ await t('config.example.json and the French overlay stay in sync', () => {
 await t('config.example.json defaults', () => {
   const example = JSON.parse(fs.readFileSync(path.join(bridgeDir, 'config.example.json'), 'utf8'));
   assert.deepEqual(example.httpAllowedHosts, ['*.liberty-talk.com']);
-  assert.equal(example.host, '127.0.0.1');
+  assert.equal(example.host, '', '127.0.0.1 in solo mode, 0.0.0.0 in server mode');
+  assert.equal(example.mode, 'solo');
+  assert.equal(example.publicUrl, '');
   assert.equal(example.settings.language, 'en');
   assert.ok(example.poll.types.subscribe_gift);
   assert.ok(!example.poll.types.sub_gift);
@@ -1224,7 +1469,8 @@ try {
   await t('bridge starts', async () => {
     // Last line printed once listening (stdout may come in several pieces)
     await waitFor(() => bridge.out.includes('http steps allowed to'), 8000, 'bridge start');
-    assert.match(bridge.out, /Talky bridge 0\.4\.0 listening on http:\/\/127\.0\.0\.1:\d+/);
+    assert.match(bridge.out, /Talky bridge 0\.5\.0 listening on http:\/\/127\.0\.0\.1:\d+/);
+    assert.doesNotMatch(bridge.out, /server mode/, 'solo mode by default');
     assert.match(bridge.out, /http steps allowed to: \*\.liberty-talk\.com, 127\.0\.0\.1:\d+/);
   });
 
@@ -1233,8 +1479,9 @@ try {
     assert.equal(anon.status, 200);
     assert.deepEqual(anon.json, { ok: true });
     const full = await request(port, 'GET', `/health?token=${TOKEN}`);
-    assert.equal(full.json.version, '0.4.0');
-    assert.equal(full.json.protocol, 2);
+    assert.equal(full.json.version, '0.5.0');
+    assert.equal(full.json.protocol, 3);
+    assert.equal(full.json.mode, 'solo');
     assert.equal(typeof full.json.pending, 'number');
     assert.deepEqual(full.json.ackedAbove, []);
     assert.equal(full.json.testNonce, undefined, 'the test code stays in talky_status.json');
@@ -1532,9 +1779,9 @@ try {
     const seq = r.json.results[0].job;
     // The mod acknowledges a job refused for good, then reports it
     fs.writeFileSync(path.join(luaDir, 'talky_ack.txt'), `${seq}\n`);
-    fs.writeFileSync(outboxPath, `${JSON.stringify({ event: 'job_rejected', data: { seq, workflow: 'new_follower', reason: 'not_allowed' } })}\n`);
-    await waitFor(() => bridge.out.includes(`job #${seq} (new_follower) refused by the server: not_allowed`), 3000, 'job_rejected log');
-    assert.match(bridge.out, /refused by the server: not_allowed - this player may not use Talky on this server\. .*Talky\.AllowedPlayers/);
+    fs.writeFileSync(outboxPath, `${JSON.stringify({ event: 'job_rejected', data: { seq, workflow: 'new_follower', reason: 'disabled' } })}\n`);
+    await waitFor(() => bridge.out.includes(`job #${seq} (new_follower) refused by the server: disabled`), 3000, 'job_rejected log');
+    assert.match(bridge.out, /refused by the server: disabled - an action of this job is turned off in the sandbox options of the server\./);
     const status = await waitFor(async () => {
       const st = await statusOf(luaDir);
       return st.recent.find((e) => e.source === 'game:job_rejected') && st;
@@ -1543,15 +1790,16 @@ try {
     assert.equal(entry.job, seq);
     assert.equal(entry.workflow, 'new_follower');
     assert.equal(entry.user, 'Refused');
-    assert.equal(entry.rejected, 'not_allowed');
-    assert.equal(entry.error, 'refused by the server: not_allowed');
+    assert.equal(entry.rejected, 'disabled');
+    assert.equal(entry.error, 'refused by the server: disabled');
     assert.ok(!readJobs(luaDir).some((j) => j.seq === seq), 'acknowledged, so gone from the inbox');
   });
 
-  await t('status file for the in-game window: version, protocol 2, testNonce, session', async () => {
+  await t('status file for the in-game window: version, protocol 3, mode, testNonce, session', async () => {
     const status = await statusOf(luaDir);
-    assert.equal(status.version, '0.4.0');
-    assert.equal(status.protocol, 2);
+    assert.equal(status.version, '0.5.0');
+    assert.equal(status.protocol, 3);
+    assert.equal(status.mode, 'solo');
     assert.match(status.testNonce, /^[0-9a-f]{32}$/);
     assert.equal(status.session, JSON.parse(fs.readFileSync(path.join(tmpRoot, 'bridge-state.json'), 'utf8')).session);
     assert.match(status.session, /^[0-9a-f]{16}$/);
@@ -1642,7 +1890,7 @@ await t('CLI: node bridge.js version', async () => {
   let out = '';
   child.stdout.on('data', (c) => { out += c; });
   await new Promise((r) => child.once('exit', r));
-  assert.equal(out.trim(), '0.4.0');
+  assert.equal(out.trim(), '0.5.0');
 });
 
 // The config.json and talky_config.json of the "bridge process" tests (public URL
@@ -1707,6 +1955,133 @@ await t('CLI new-token: a new random token in config.json, the rest of the file 
   assert.equal(fs.existsSync(path.join(dir, 'missing.json')), false);
 });
 
+// ------------------------------------------------------------------ server mode (bridge process)
+
+console.log('server mode, bridge process');
+
+const srvRoot = path.join(tmpRoot, 'server-mode');
+const srvLua = path.join(srvRoot, 'Lua');
+fs.mkdirSync(srvLua, { recursive: true });
+const srvPort = await freePort();
+const srvConfig = path.join(srvRoot, 'config.json');
+const TOK_ALICE = 'a1'.repeat(24);
+// config.json of a 0.4.0 solo bridge (mode solo, no host): started with --server
+fs.writeFileSync(srvConfig, JSON.stringify({
+  mode: 'solo', port: srvPort, host: '', token: TOKEN, zomboidLuaDir: srvLua, publicUrl: 'http://203.0.113.5:' + srvPort,
+}, null, 2));
+fs.writeFileSync(path.join(srvRoot, 'streamers.json'), JSON.stringify({ rev: 1, streamers: [{ name: 'Alice', token: TOK_ALICE, createdAt: 1 }] }));
+fs.writeFileSync(path.join(srvLua, 'talky_config.json'), JSON.stringify({
+  webhooks: { follow: { workflow: 'follow_wf' } },
+  workflows: {
+    follow_wf: { cooldownSeconds: 30, steps: [{ action: 'spawn_zombie', name: '{{user}}' }, { action: 'notify', text: '{{user}} for {{streamer}}' }] },
+    on_kill: { steps: [{ action: 'notify', text: '{{name}} is down' }] },
+    started: { steps: [{ action: 'notify', text: 'started' }, { action: 'log', message: 'server started' }] },
+  },
+  gameEvents: { zombie_killed: 'on_kill', game_started: 'started' },
+}));
+const srvOutbox = path.join(srvLua, 'talky_outbox.txt');
+const srvMirror = () => JSON.parse(fs.readFileSync(path.join(srvLua, 'talky_streamers.json'), 'utf8'));
+const srvBridge = startBridge(srvConfig, {}, ['--server']);
+const hook = (token, body, extra = '') => request(srvPort, 'POST', `/hooks/follow${extra}`, { headers: token ? { 'X-Bridge-Token': token, 'Content-Type': 'application/json' } : {}, body });
+const jobOf = async (r) => {
+  const seq = r.json && r.json.results && r.json.results[0].job;
+  assert.equal(typeof seq, 'number', JSON.stringify(r.json));
+  return waitFor(() => readJobs(srvLua).find((j) => j.seq === seq), 3000, `job ${seq}`);
+};
+try {
+  await t('server mode: --server over the "mode" of config.json, every address, the copy of the streamer list', async () => {
+    await waitFor(() => srvBridge.out.includes('calls arrive in clear text'), 8000, 'server bridge start');
+    assert.match(srvBridge.out, new RegExp(`Talky bridge 0\\.5\\.0 listening on http://0\\.0\\.0\\.0:${srvPort} \\(server mode\\)`));
+    assert.match(srvBridge.out, /warning: config\.json says "mode": "solo", the bridge was started with --server: server mode for this run\./);
+    assert.match(srvBridge.out, /streamers: 1\. An admin adds them in game: F8 > Webhooks/);
+    assert.match(srvBridge.out, new RegExp(`public address given to the streamers: http://203\\.0\\.113\\.5:${srvPort}`));
+    assert.doesNotMatch(srvBridge.out, /cloudflared/, 'no tunnel in server mode');
+    assert.deepEqual(srvMirror().streamers.map((s) => s.name), ['Alice']);
+    const st = await statusOf(srvLua);
+    assert.equal(st.mode, 'server');
+    assert.equal(st.streamers, 1);
+    assert.ok(!JSON.stringify(st).includes(TOK_ALICE));
+  });
+
+  await t('server mode: the token of a streamer names the target of the job; the bridge token and others get 401', async () => {
+    const r = await hook(TOK_ALICE, { user_name: 'Viewer' });
+    assert.equal(r.status, 200, r.text);
+    const job = await jobOf(r);
+    assert.equal(job.target, 'Alice');
+    assert.equal(job.steps[1].text, 'Viewer for Alice');
+    assert.equal((await hook(TOKEN, { user_name: 'x' })).status, 401, 'the bridge token names nobody');
+    assert.equal((await hook('b2'.repeat(24), { user_name: 'x' })).status, 401);
+    assert.equal((await hook(undefined, { user_name: 'x' })).status, 401);
+    assert.equal((await request(srvPort, 'POST', '/hooks/nope', { headers: { 'X-Bridge-Token': 'x' }, body: {} })).status, 401, 'no enumeration');
+    assert.equal((await request(srvPort, 'POST', '/hooks/nope', { headers: { 'X-Bridge-Token': TOK_ALICE }, body: {} })).status, 404);
+    const viaQuery = await hook(undefined, { user_name: 'Q' }, `?token=${TOK_ALICE}`);
+    assert.equal(viaQuery.status, 200);
+    assert.equal(viaQuery.json.results[0].skipped, 'cooldown', 'the cooldown of the workflow counts for Alice');
+    assert.ok(!srvBridge.out.includes(TOK_ALICE), 'a token is never printed');
+  });
+
+  await t('server mode: /fire with the bridge token names its streamer; a streamer token works too', async () => {
+    const none = await request(srvPort, 'POST', '/fire/started', { headers: auth, body: {} });
+    assert.equal(none.status, 400);
+    assert.match(none.json.error, /name a streamer of this server with "streamer"/);
+    const unknown = await request(srvPort, 'POST', '/fire/started', { headers: auth, body: { streamer: 'Mallory' } });
+    assert.equal(unknown.status, 400);
+    const named = await request(srvPort, 'POST', '/fire/started', { headers: auth, body: { streamer: 'alice' } });
+    assert.equal(named.status, 200, named.text);
+    assert.equal((await jobOf(named)).target, 'Alice');
+    const own = await request(srvPort, 'POST', '/fire/started', { headers: { 'X-Bridge-Token': TOK_ALICE }, body: {} });
+    assert.equal((await jobOf(own)).target, 'Alice');
+  });
+
+  await t('server mode: an admin adds a streamer (outbox), the bridge draws the token; new token; removal', async () => {
+    fs.appendFileSync(srvOutbox, `${JSON.stringify({ event: 'streamer_add', data: { name: 'Bob', by: 'Boss' }, ts: Date.now() })}\n`);
+    const bob = await waitFor(() => srvMirror().streamers.find((s) => s.name === 'Bob'), 3000, 'Bob in talky_streamers.json');
+    assert.match(bob.token, /^[0-9a-f]{48}$/);
+    const saved = JSON.parse(fs.readFileSync(path.join(srvRoot, 'streamers.json'), 'utf8'));
+    assert.equal(saved.streamers.find((s) => s.name === 'Bob').token, bob.token, 'bridge/streamers.json keeps it');
+    const r = await hook(bob.token, { user_name: 'ForBob' });
+    assert.equal(r.status, 200);
+    assert.equal((await jobOf(r)).target, 'Bob');
+    fs.appendFileSync(srvOutbox, `${JSON.stringify({ event: 'streamer_token', data: { name: 'Bob', by: 'Boss' } })}\n`);
+    const bob2 = await waitFor(() => { const s = srvMirror().streamers.find((x) => x.name === 'Bob'); return s && s.token !== bob.token && s; }, 3000, 'new token');
+    assert.equal((await hook(bob.token, { user_name: 'old' })).status, 401, 'the old token stops at once');
+    assert.equal((await hook(bob2.token, { user_name: 'new' })).status, 200);
+    fs.appendFileSync(srvOutbox, `${JSON.stringify({ event: 'streamer_remove', data: { name: 'bob', by: 'Boss' } })}\n`);
+    await waitFor(() => !srvMirror().streamers.some((s) => s.name === 'Bob'), 3000, 'Bob removed');
+    assert.equal((await hook(bob2.token, { user_name: 'gone' })).status, 401);
+    assert.ok(!srvBridge.out.includes(bob.token) && !srvBridge.out.includes(bob2.token), 'never printed');
+    assert.match(srvBridge.out, /streamer "Bob" added by Boss/);
+    assert.match(srvBridge.out, /streamer "Bob" removed by Boss: their token no longer works/);
+  });
+
+  await t('server mode: a game event runs its workflow for the streamer it names; without one, only the bridge steps', async () => {
+    const before = readJobs(srvLua).length;
+    fs.appendFileSync(srvOutbox, `${JSON.stringify({ event: 'zombie_killed', data: { name: 'Zed', byPlayer: true, streamer: 'Alice' } })}\n`);
+    const job = await waitFor(() => readJobs(srvLua).find((j) => j.workflow === 'on_kill'), 3000, 'on_kill job');
+    assert.equal(job.target, 'Alice');
+    assert.equal(job.steps[0].text, 'Zed is down');
+    fs.appendFileSync(srvOutbox, `${JSON.stringify({ event: 'game_started', data: { mode: 'server', host: false, server: '' } })}\n`);
+    const logs = () => (srvBridge.out.match(/\[log\] server started/g) || []).length;
+    const logsBefore = logs();
+    await waitFor(() => /\[game:game_started\] started: 1 game step\(s\) skipped, no streamer for this event \(server mode\)/.test(srvBridge.out), 3000, 'game_started without streamer');
+    await waitFor(() => logs() > logsBefore, 3000, 'its log step still runs');
+    assert.equal(readJobs(srvLua).filter((j) => j.workflow === 'started' && !j.target).length, 0, 'never a job without target');
+    assert.ok(readJobs(srvLua).length >= before);
+  });
+
+  await t('server mode: game events written while the bridge was stopped and too old are skipped, the streamer requests are not', async () => {
+    const old = Date.now() - 3 * 3600 * 1000;
+    fs.appendFileSync(srvOutbox, `${JSON.stringify({ event: 'zombie_killed', data: { name: 'Ancient', streamer: 'Alice' }, ts: old })}\n`
+      + `${JSON.stringify({ event: 'streamer_add', data: { name: 'Carol', by: 'Boss' }, ts: old })}\n`);
+    await waitFor(() => srvMirror().streamers.some((s) => s.name === 'Carol'), 3000, 'Carol added');
+    await sleep(600);
+    assert.equal(readJobs(srvLua).filter((j) => j.steps.some((s) => String(s.text).includes('Ancient'))).length, 0);
+    assert.match(srvBridge.out, /game event\(s\) older than 10 minutes skipped/);
+  });
+} finally {
+  await stopBridge(srvBridge);
+}
+
 // ------------------------------------------------------------------ first start without config.json
 
 console.log('first start without config.json');
@@ -1732,8 +2107,8 @@ const sameAsExample = (cfg) => {
 
 // The created config.json listens on 7420 (config.example.json): wait for the lines printed
 // before listening, then stop the bridge, so the test does not depend on that port.
-async function firstStart(env, until) {
-  const proc = startBridge(env.LT_BRIDGE_CONFIG, env);
+async function firstStart(env, until, args = []) {
+  const proc = startBridge(env.LT_BRIDGE_CONFIG, env, args);
   try {
     await waitFor(() => until.test(proc.out) || proc.child.exitCode !== null, 8000, `bridge output ${until}`);
   } finally {
@@ -1768,6 +2143,21 @@ await t('first start: config.json created with a random token of 48 hex characte
   const game = JSON.parse(fs.readFileSync(path.join(fakeHome, 'Zomboid', 'Lua', 'talky_config.json'), 'utf8'));
   assert.equal(game.workflows.new_follower.steps[0].text, lang === 'fr' ? '{{user}} rejoint la horde !' : '{{user}} joins the horde!');
   assert.equal(game.token, undefined, 'the token stays in config.json');
+});
+
+await t('first start with --server: config.json in server mode, the bridge token not meant for the streamers', async () => {
+  const dir = path.join(fakeHome, 'talky-server', 'bridge');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, 'config.json');
+  const out = await firstStart(homeEnv('en_US.UTF-8', file), /config loaded/, ['--server']);
+  const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(cfg.mode, 'server');
+  assert.equal(cfg.host, '', 'every address in server mode');
+  assert.match(cfg.token, /^[0-9a-f]{48}$/);
+  assert.deepEqual({ ...cfg, mode: 'solo', token: JSON.parse(exampleText).token, settings: { ...cfg.settings, language: 'en' } }, JSON.parse(exampleText), 'only mode, token and language differ');
+  assert.match(out, /with a random token \(language: (en|fr), server mode\)/);
+  assert.match(out, /Streamers do not need it: an admin gives each one their own token from the game \(F8 > Webhooks\)/);
+  assert.ok(!out.includes(cfg.token), 'the token is never printed');
 });
 
 await t('next start: the existing config.json is kept byte for byte', async () => {
@@ -1821,11 +2211,23 @@ await t('a config.json copied by hand with the placeholder token is refused, not
   assert.equal(fs.readFileSync(file, 'utf8'), exampleText);
 });
 
+await t('a "mode" other than solo or server: clear message, the bridge does not start; an unknown command too', async () => {
+  const file = path.join(frDir, 'bad-mode.json');
+  fs.writeFileSync(file, JSON.stringify({ token: TOKEN, mode: 'cloud' }));
+  const r = await runBridgeToExit(homeEnv('en_US.UTF-8', file));
+  assert.equal(r.code, 1);
+  assert.match(r.out, /"mode" in config\.json must be "solo" or "server"\./);
+  const u = await runBridgeToExit(homeEnv('en_US.UTF-8', frConfig), ['srever']);
+  assert.equal(u.code, 1);
+  assert.match(u.out, /Unknown command "srever"\. Commands: .*options --server, --solo\./);
+  assert.doesNotMatch(u.out, /listening on/);
+});
+
 await t('fire without config.json: clear message, nothing created', async () => {
   const missing = path.join(frDir, 'missing.json');
   const r = await runBridgeToExit(homeEnv('fr_FR.UTF-8', missing), ['fire', 'new_follower']);
   assert.equal(r.code, 1);
-  assert.match(r.out, /No config at ~[\\/]Documents[\\/]Talky[\\/]bridge[\\/]missing\.json\. Start the bridge once \(start-bridge\.cmd\): it creates config\.json\./);
+  assert.match(r.out, /No config at ~[\\/]Documents[\\/]Talky[\\/]bridge[\\/]missing\.json\. Start the bridge once \(start-bridge\.cmd, or start-bridge\.sh on Linux\): it creates config\.json\./);
   assert.ok(!r.out.includes(fakeHome), r.out);
   assert.equal(fs.existsSync(missing), false);
 });

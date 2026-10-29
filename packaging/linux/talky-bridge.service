@@ -1,0 +1,35 @@
+# Example systemd unit: the Talky bridge in server mode, next to a Project Zomboid dedicated
+# server, started with the machine and again after a crash.
+#
+# 1. Extract the Talky zip to a folder of the account that runs the server, for example
+#    /home/pzserver/talky, and start "sh start-bridge.sh" once by hand: it creates
+#    bridge/config.json (Ctrl+C to stop it).
+# 2. Copy this file to /etc/systemd/system/talky-bridge.service and change User, Group and the
+#    three paths below (the account of the server, the folder of step 1, the path of node:
+#    "command -v node").
+# 3. sudo systemctl daemon-reload && sudo systemctl enable --now talky-bridge
+#    Lines of the bridge: journalctl -u talky-bridge -f
+#
+# The bridge must run with the account of the server: it reads and writes its Zomboid/Lua folder
+# (~/Zomboid/Lua, or "zomboidLuaDir" in bridge/config.json for a server started with -cachedir).
+
+[Unit]
+Description=Talky bridge for Project Zomboid (LibertyTalk live events, server mode)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pzserver
+Group=pzserver
+WorkingDirectory=/home/pzserver/talky/bridge
+ExecStart=/usr/bin/node /home/pzserver/talky/bridge/bridge.js --server
+Restart=on-failure
+RestartSec=5
+# The console of the bridge never prints a token: the journal can keep it.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

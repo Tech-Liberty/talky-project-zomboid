@@ -1,6 +1,8 @@
 {
+  "mode": "solo",
   "port": 7420,
-  "host": "127.0.0.1",
+  "host": "",
+  "publicUrl": "",
   "token": "change-me-to-a-long-random-string",
   "zomboidLuaDir": "%USERPROFILE%/Zomboid/Lua",
   "jobTtlSeconds": 900,

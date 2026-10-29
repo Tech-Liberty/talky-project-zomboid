@@ -1,11 +1,6 @@
 {
     "Sandbox_Talky": "Talky",
 
-    "Sandbox_Talky_AllowedPlayers": "Joueurs autorisés",
-    "Sandbox_Talky_AllowedPlayers_tooltip": "Noms d'utilisateur qui peuvent utiliser Talky sur ce serveur, séparés par des virgules ou des points-virgules (un espace fait partie du nom ; de A à Z, sans tenir compte des majuscules). Ajoutez un streamer après sa première connexion, une fois son mot de passe choisi.",
-    "Sandbox_Talky_AllowAdmins": "Les admins et modérateurs peuvent utiliser Talky",
-    "Sandbox_Talky_AllowAdmins_tooltip": "Les joueurs dont le rôle a la capacité CreateHorde (admin et modérateur par défaut) peuvent utiliser Talky sans être dans la liste ci-dessus.",
-
     "Sandbox_Talky_MaxZombiesPerAction": "Zombies max par action",
     "Sandbox_Talky_MaxZombiesPerAction_tooltip": "Zombies créés par une étape d'apparition ou de horde, au plus.",
     "Sandbox_Talky_MaxZombiesPerJob": "Zombies max par job",
@@ -17,13 +12,13 @@
     "Sandbox_Talky_MaxSpawnDistance": "Distance d'apparition max (cases)",
     "Sandbox_Talky_MaxSpawnDistance_tooltip": "Les zombies de Talky apparaissent au plus à cette distance du streamer.",
     "Sandbox_Talky_MaxStepsPerJob": "Étapes max par job",
-    "Sandbox_Talky_MaxStepsPerJob_tooltip": "Les étapes au-delà de ce nombre sont ignorées.",
+    "Sandbox_Talky_MaxStepsPerJob_tooltip": "Les étapes au-delà de ce nombre sont ignorées (la console du serveur indique combien).",
     "Sandbox_Talky_MaxQueuedJobs": "Jobs en attente max par joueur",
-    "Sandbox_Talky_MaxQueuedJobs_tooltip": "Jobs qui attendent une place libre. Au-delà, le jeu du streamer les renvoie quelques secondes plus tard.",
+    "Sandbox_Talky_MaxQueuedJobs_tooltip": "Jobs qui attendent une place libre. Au-delà, les jobs suivants restent dans la boîte de réception du pont et sont relus une seconde plus tard.",
     "Sandbox_Talky_MaxActiveJobs": "Jobs en cours en même temps max par joueur",
     "Sandbox_Talky_MaxActiveJobs_tooltip": "Un job garde sa place pendant ses étapes d'attente aussi.",
     "Sandbox_Talky_MaxJobsPerMinute": "Jobs max par minute par joueur",
-    "Sandbox_Talky_MaxJobsPerMinute_tooltip": "Les jobs en trop sont renvoyés plus tard par le jeu du streamer, jusqu'à la fin de leur durée de vie.",
+    "Sandbox_Talky_MaxJobsPerMinute_tooltip": "Les jobs en trop restent dans la boîte de réception du pont jusqu'à la fin de la minute, ou jusqu'à la fin de leur durée de vie.",
 
     "Sandbox_Talky_AllowZombies": "Zombies et hordes",
     "Sandbox_Talky_AllowZombies_tooltip": "Autorise les actions spawn_zombie et horde.",

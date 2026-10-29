@@ -1,10 +1,15 @@
 -- Main Talky window: sidebar of pages, everything editable, saved to talky_config.json.
+--   single player : the files of this game (the bridge runs on this PC).
+--   multiplayer   : what the server says (Talky_Remote). Every player sees the Status page;
+--                   the admins (CreateHorde role) manage the streamers (Webhooks page) and the
+--                   server's talky_config.json (Workflows, Game events, Settings of the bridge).
 
 require "ISUI/ISCollapsableWindow"
 require "Talky/Talky_Text"
 require "Talky/Talky_Net"
 require "Talky/Talky_Settings"
 require "Talky/Talky_Bridge"
+require "Talky/Talky_Remote"
 require "Talky/Talky_Overlay"
 require "Talky/UI/Talky_Widgets"
 require "Talky/UI/Talky_Editors"
@@ -14,6 +19,10 @@ Talky_Window = ISCollapsableWindow:derive("Talky_Window")
 local C = Talky_UI.col
 local ROW, PAD = Talky_UI.ROW, 12
 local SIDEBAR = 170
+
+local function fit(text, w)
+    return Talky_UI.truncate(text, w)
+end
 
 local PAGES = {
     { id = "status",    labelKey = "Page_status" },
@@ -43,11 +52,70 @@ function Talky_Window.toggle()
         return
     end
     Talky_Settings.load()
+    if Talky_Remote.active() then
+        Talky_Remote.askStatus()
+        -- a fresh copy of the server's configuration (another admin may have changed it)
+        if Talky_Remote.isAdmin() and Talky_Remote.configState ~= "loading" then Talky_Remote.askConfig() end
+    end
     local w, h = 940, 620
     local o = Talky_Window:new((getCore():getScreenWidth() - w) / 2, (getCore():getScreenHeight() - h) / 2, w, h)
     o:initialise()
     o:addToUIManager()
     Talky_Window.instance = o
+end
+
+-- Multiplayer: what the server says changes the page only when it changes what the page shows
+-- (a page drawn again loses the text box being typed in).
+local function remoteSignature(what)
+    local R = Talky_Remote
+    if what == "streamers" then
+        local parts = {}
+        for _, e in ipairs(R.streamers and R.streamers.list or {}) do
+            parts[#parts + 1] = e.name .. "=" .. e.token .. (e.online and "+" or "")
+        end
+        local s = R.streamers
+        return table.concat(parts, ",") .. "|" .. tostring(s and s.publicUrl) .. "|" .. tostring(s and s.bridge)
+    end
+    local s = R.status
+    if not s then return R.state end
+    local recent = s.recent and s.recent[1]
+    return R.state .. "|" .. tostring(s.admin) .. tostring(s.streamer) .. tostring(s.bridge.alive) .. s.bridge.mode
+        .. tostring(s.bridge.protocol) .. "|" .. tostring(recent and recent.at) .. tostring(s.bridge.pending)
+end
+
+function Talky_Remote.onChange(what)
+    local win = Talky_Window.instance
+    if not win then return end
+    if what == "status" or what == "streamers" then
+        local sig = remoteSignature(what)
+        if win.remoteSig and win.remoteSig[what] == sig then return end
+        win.remoteSig = win.remoteSig or {}
+        win.remoteSig[what] = sig
+    elseif what == "configSaved" then
+        local r = Talky_Remote.lastSave
+        if r and r.ok then
+            win.dirty = false
+            Talky_Overlay.toast(Talky_T("Toast_SavedServer"), "#8b5cf6", 3)
+        else
+            Talky_Overlay.toast(Talky_T("Toast_SaveFailed", Talky_T("Save_" .. tostring(r and r.error or "error"))), "#ff5555", 4)
+        end
+        return
+    elseif what == "testAck" then
+        local r = Talky_Remote.lastTest
+        if r and not r.ok then Talky_Overlay.toast(Talky_T("Toast_TestFailed", Talky_T("Test_" .. tostring(r.error or "invalid"))), "#ff5555", 4) end
+        return
+    elseif what == "streamerAck" then
+        local a = Talky_Remote.lastAck
+        if a and not a.ok then
+            Talky_Overlay.toast(Talky_T("Toast_StreamerRefused", Talky_T("Ack_" .. tostring(a.reason or "error"))), "#ff5555", 4)
+        elseif a then
+            Talky_Overlay.toast(Talky_T("Toast_StreamerAsked", a.name), "#8b5cf6", 3)
+        end
+    elseif what == "config" then
+        Talky_Settings.data = Talky_Remote.config
+        win.dirty = false
+    end
+    win:showPage(win.pageId)
 end
 
 function Talky_Window:initialise()
@@ -94,6 +162,7 @@ end
 
 function Talky_Window:prerender()
     ISCollapsableWindow.prerender(self)
+    Talky_Remote.refresh(self.pageId)
     local top = self:titleBarHeight()
     -- sidebar
     self:drawRect(0, top, SIDEBAR, self.height - top, 1, C.panel.r, C.panel.g, C.panel.b)
@@ -132,17 +201,58 @@ function Talky_Window:showPage(id)
     builder(self, self.page)
 end
 
+-- Multiplayer: the display settings are saved here at once, the configuration of an admin is
+-- sent to the server (the toast comes with its answer, Talky_Remote.onChange).
 function Talky_Window:onSave()
-    if Talky_Settings.save() then
+    local ok, reason = Talky_Settings.save()
+    if Talky_Settings.mp() then
+        if Talky_Settings.ready() then
+            if not ok then Talky_Overlay.toast(Talky_T("Toast_SaveFailed", Talky_T("Save_" .. tostring(reason or "error"))), "#ff5555", 4) end
+        elseif ok then
+            self.dirty = false
+            Talky_Overlay.toast(Talky_T("Toast_SavedLocal"), "#8b5cf6", 3)
+        end
+        return
+    end
+    if ok then
         self.dirty = false
         Talky_Overlay.toast(Talky_T("Toast_Saved"), "#8b5cf6", 3)
     end
 end
 
 function Talky_Window:onReload()
+    if Talky_Settings.mp() and Talky_Remote.isAdmin() then Talky_Remote.askConfig() end
     Talky_Settings.load()
     self.dirty = false
     self:showPage(self.pageId)
+end
+
+-- Multiplayer pages an admin only may open: nil when the page may be built, else the y below
+-- the message drawn instead (not an admin, or the server's configuration not there yet).
+function Talky_Window:adminGate(page, y)
+    if not Talky_Settings.mp() then return nil end
+    local w = page.width
+    if not Talky_Remote.isAdmin() then
+        Talky_UI.label(page, 0, y, fit(Talky_T("Admin_Only"), w), C.muted)
+        y = y + ROW
+        if Talky_Remote.isHost() then
+            Talky_UI.label(page, 0, y, fit(Talky_T("Server_HostNotAdmin"), w - 200), C.text)
+            Talky_UI.button(page, w - 190, y, 190, Talky_T("Btn_AllowMe"), self, function(win)
+                if Talky_Remote.allowMe() then Talky_Overlay.toast(Talky_T("Toast_AllowMeSent"), "#8b5cf6", 4) end
+            end, "primary")
+            y = y + ROW
+        end
+        return y
+    end
+    if not Talky_Settings.ready() then
+        if Talky_Remote.configState == "error" then
+            Talky_UI.label(page, 0, y, fit(Talky_T("Admin_LoadError", tostring(Talky_Remote.configError)), w), C.bad)
+        else
+            Talky_UI.label(page, 0, y, fit(Talky_T("Admin_Loading"), w), C.muted)
+        end
+        return y + ROW
+    end
+    return nil
 end
 
 local function title(page, text, y)
@@ -150,10 +260,6 @@ local function title(page, text, y)
 end
 
 ---------------------------------------------------------------- page: status
-
-local function fit(text, w)
-    return Talky_UI.truncate(text, w)
-end
 
 local reasonText = Talky_Bridge.reasonText
 
@@ -168,67 +274,40 @@ local function disabledCategories(caps)
     return table.concat(names, ", ")
 end
 
--- Mode, answer of the server and its limits. Returns the next y.
-function Talky_Window:serverLines(page, y)
-    local info = Talky_Bridge.serverStatus()
+-- The server's limits and the categories it turned off. Returns the next y.
+local function capsLines(page, y, caps)
+    if not caps then return y end
     local w = page.width
-    if info.mode ~= "client" then
-        -- single player: the "server" is this game; no answer means its server/ files did not load
-        -- (there is no server console: the errors are in console.txt)
-        if info.state == "no_answer" then
-            Talky_UI.label(page, 0, y, fit(Talky_T("Solo_NoAnswer"), w), C.bad)
-        else
-            Talky_UI.label(page, 0, y, fit(Talky_T("Mode_Solo"), w), C.muted)
-        end
-        return y + ROW
-    end
-    local state, col = info.state, C.muted
-    local text
-    if state == "allowed" then
-        text, col = Talky_T("Server_Allowed", info.serverVersion or "?"), C.ok
-    elseif state == "denied" then
-        text, col = Talky_T("Server_NotAllowed", info.username), C.bad
-    elseif state == "version" then
-        text, col = Talky_T("Server_Version", info.serverVersion or "?", Talky_Config.version), C.bad
-    elseif state == "no_answer" then
-        text, col = Talky_T("Server_NoAnswer"), C.bad
-    else
-        text = Talky_T("Server_Waiting")
-    end
-    text = Talky_T(info.host and "Mode_Host" or "Mode_Server") .. "  " .. text
-    local btnW = (state == "denied" and info.host) and 190 or 0
-    Talky_UI.label(page, 0, y, fit(text, w - btnW - 10), col)
-    if btnW > 0 then
-        Talky_UI.button(page, w - btnW, y, btnW, Talky_T("Btn_AllowMe"), self, function(win)
-            if Talky_Bridge.allowMe() then Talky_Overlay.toast(Talky_T("Toast_AllowMeSent"), "#8b5cf6", 4) end
-            win:showPage("status")
-        end, "primary")
-    end
+    Talky_UI.label(page, 0, y, fit(Talky_T("Server_Caps", caps.maxZombiesPerAction or "?", caps.maxZombiesPerJob or "?",
+        caps.maxSpawnDistance or "?", caps.maxActiveJobs or "?"), w), C.muted)
     y = y + ROW
-    if state == "denied" then
-        local help = info.host and Talky_T("Server_NotAllowedHost", info.username) or Talky_T("Server_NotAllowedHelp")
-        Talky_UI.label(page, 0, y, fit(help, w), C.muted)
-        y = y + ROW
-    elseif state == "allowed" and info.caps then
-        local c = info.caps
-        Talky_UI.label(page, 0, y, fit(Talky_T("Server_Caps", c.maxZombiesPerAction or "?", c.maxZombiesPerJob or "?",
-            c.maxSpawnDistance or "?", c.maxActiveJobs or "?"), w), C.muted)
-        y = y + ROW
-        local off = disabledCategories(c)
-        if off ~= "" then
-            Talky_UI.label(page, 0, y, fit(Talky_T("Server_Disabled", off), w), C.muted)
-            y = y + ROW
-        end
-    end
-    if info.noAnswer > 0 then
-        Talky_UI.label(page, 0, y, fit(Talky_T("Server_JobsNoAnswer", info.noAnswer), w), C.bad)
-        y = y + ROW
-    end
-    if info.lastReject then
-        Talky_UI.label(page, 0, y, fit(Talky_T("Server_LastReject", info.lastReject.seq, reasonText(info.lastReject.reason)), w), C.bad)
+    local off = disabledCategories(caps)
+    if off ~= "" then
+        Talky_UI.label(page, 0, y, fit(Talky_T("Server_Disabled", off), w), C.muted)
         y = y + ROW
     end
     return y
+end
+
+-- The last events of the bridge (solo: talky_status.json; multiplayer: from the server, admins).
+local function recentList(page, y, recent)
+    Talky_UI.label(page, 0, y, Talky_T("Status_Recent"), C.muted)
+    y = y + ROW
+    local log = Talky_UI.list(page, 0, y, page.width, page.height - y)
+    for _, e in ipairs(recent or {}) do
+        local when = string.sub(tostring(e.at or ""), 12, 19)
+        local txt = when .. "  " .. tostring(e.source or "-") .. "  ->  " .. tostring(e.workflow or "-") .. "  (" .. tostring(e.user or "-") .. ")"
+        if e.streamer then txt = txt .. "  " .. Talky_T("Status_ForStreamer", tostring(e.streamer)) end
+        if e.skipped then txt = txt .. "  " .. Talky_T("Status_Skipped", skipReason(e.skipped)) end
+        if e.rejected then
+            txt = txt .. "  " .. Talky_T("Status_Rejected", reasonText(e.rejected))
+        elseif e.error and not e.skipped then
+            -- "error" is the English text for windows older than 0.4.0; "skipped" is translated
+            txt = txt .. "  " .. Talky_T("Status_Error", tostring(e.error))
+        end
+        log:addItem(txt, e)
+    end
+    if #log.items == 0 then log:addItem(Talky_T("Status_Nothing"), nil) end
 end
 
 -- "Copy command" buttons: the clipboard gets the bridge command that copies the full URL
@@ -244,6 +323,7 @@ function Talky_Window:copyUrlCommand(id)
 end
 
 function Talky_Window:page_status(page)
+    if Talky_Settings.mp() then return self:page_status_mp(page) end
     local d = self:data()
     local st, alive = Talky_Settings.readStatus()
     title(page, Talky_T("Page_status"))
@@ -260,8 +340,13 @@ function Talky_Window:page_status(page)
         Talky_UI.label(page, 0, y, fit(Talky_T("Bridge_TooOld"), page.width), C.bad)
         y = y + ROW
     end
-    y = self:serverLines(page, y)
-    y = y + 12
+    -- the server/ files read the jobs: when they did not load, nothing runs (errors in console.txt)
+    if Talky_Bridge.serverCodeLoaded() then
+        Talky_UI.label(page, 0, y, fit(Talky_T("Mode_Solo"), page.width), C.muted)
+    else
+        Talky_UI.label(page, 0, y, fit(Talky_T("Solo_NoAnswer"), page.width), C.bad)
+    end
+    y = y + ROW + 12
 
     Talky_UI.label(page, 0, y, Talky_T("Status_PublicUrl"), C.muted)
     y = y + ROW
@@ -273,7 +358,7 @@ function Talky_Window:page_status(page)
 
     Talky_UI.label(page, 0, y, Talky_T("Status_HookUrls"), C.muted)
     y = y + ROW
-    local listRows = TalkyNet.mode() == "client" and 4 or 6
+    local listRows = 6
     local list = Talky_UI.list(page, 0, y, page.width - 160, ROW * listRows)
     for _, id in ipairs(Talky_Settings.webhookIds()) do
         local hook = d.webhooks[id]
@@ -287,23 +372,55 @@ function Talky_Window:page_status(page)
     y = y + ROW * listRows + 4
     Talky_UI.label(page, 0, y, fit(Talky_T("Status_UrlCommandHelp"), page.width), C.muted)
     y = y + ROW + 8
+    recentList(page, y, st and st.recent)
+end
 
-    Talky_UI.label(page, 0, y, Talky_T("Status_Recent"), C.muted)
-    y = y + ROW
-    local log = Talky_UI.list(page, 0, y, page.width, page.height - y)
-    for _, e in ipairs((st and st.recent) or {}) do
-        local when = string.sub(tostring(e.at or ""), 12, 19)
-        local txt = when .. "  " .. tostring(e.source or "-") .. "  ->  " .. tostring(e.workflow or "-") .. "  (" .. tostring(e.user or "-") .. ")"
-        if e.skipped then txt = txt .. "  " .. Talky_T("Status_Skipped", skipReason(e.skipped)) end
-        if e.rejected then
-            txt = txt .. "  " .. Talky_T("Status_Rejected", reasonText(e.rejected))
-        elseif e.error and not e.skipped then
-            -- "error" is the English text for windows older than 0.4.0; "skipped" is translated
-            txt = txt .. "  " .. Talky_T("Status_Error", tostring(e.error))
-        end
-        log:addItem(txt, e)
+-- Multiplayer: the answer of the server, this player's place (streamer, admin), the bridge of
+-- the server, its limits; for the admins, the last events of the bridge.
+function Talky_Window:page_status_mp(page)
+    local R = Talky_Remote
+    local w = page.width
+    title(page, Talky_T("Page_status"))
+    local y = ROW + 10
+    local s = R.status
+    if not s then
+        local key = R.state == "no_answer" and "Server_NoAnswer" or "Server_Waiting"
+        Talky_UI.label(page, 0, y, fit(Talky_T(key), w), R.state == "no_answer" and C.bad or C.muted)
+        return
     end
-    if #log.items == 0 then log:addItem(Talky_T("Status_Nothing"), nil) end
+    Talky_UI.label(page, 0, y, fit(Talky_T("Server_Ready", s.version), w), C.ok)
+    y = y + ROW
+    if s.streamer then
+        Talky_UI.label(page, 0, y, fit(Talky_T("Server_YouStreamer"), w), C.ok)
+    else
+        Talky_UI.label(page, 0, y, fit(Talky_T("Server_NotStreamer"), w), C.muted)
+    end
+    y = y + ROW
+    if s.admin then
+        Talky_UI.label(page, 0, y, fit(Talky_T("Server_YouAdmin"), w), C.text)
+        y = y + ROW
+    elseif R.isHost() then
+        Talky_UI.label(page, 0, y, fit(Talky_T("Server_HostNotAdmin"), w - 200), C.text)
+        Talky_UI.button(page, w - 190, y, 190, Talky_T("Btn_AllowMe"), self, function(win)
+            if R.allowMe() then Talky_Overlay.toast(Talky_T("Toast_AllowMeSent"), "#8b5cf6", 4) end
+        end, "primary")
+        y = y + ROW
+    end
+    local b = s.bridge
+    if not b.alive then
+        Talky_UI.label(page, 0, y, fit(Talky_T("Server_BridgeOffline"), w), C.bad)
+        y = y + ROW
+        Talky_UI.label(page, 0, y, fit(Talky_T("Server_BridgeOfflineHelp"), w), C.muted)
+    elseif b.mode ~= "server" then
+        Talky_UI.label(page, 0, y, fit(Talky_T("Server_BridgeSolo"), w), C.bad)
+    elseif b.protocol < Talky_Config.bridgeProtocol then
+        Talky_UI.label(page, 0, y, fit(Talky_T("Bridge_TooOldServer"), w), C.bad)
+    else
+        Talky_UI.label(page, 0, y, fit(Talky_T("Server_BridgeOnline", b.version, tostring(b.port)), w), C.ok)
+    end
+    y = y + ROW
+    y = capsLines(page, y, s.caps) + 12
+    if s.admin then recentList(page, y, s.recent) end
 end
 
 ---------------------------------------------------------------- page: webhooks
@@ -317,11 +434,18 @@ local function workflowOptions(withNone, withRoutes)
 end
 
 function Talky_Window:page_webhooks(page)
-    local d = self:data()
+    if Talky_Settings.mp() then return self:page_webhooks_mp(page) end
     title(page, Talky_T("Page_webhooks"))
     local y = ROW + 10
     Talky_UI.label(page, 0, y, Talky_T("Hooks_Intro"), C.muted)
     y = y + ROW + 6
+    self:webhookEditor(page, y, true)
+end
+
+-- The webhooks (one /hooks/<id> each) and the selected one: its workflow or its routes. Single
+-- player also shows whether it has a dedicated token and the Copy command button.
+function Talky_Window:webhookEditor(page, y, solo)
+    local d = self:data()
     local listW = 220
     local list = Talky_UI.list(page, 0, y, listW, page.height - y - ROW - 8, self, function(win, id)
         win.selectedHook = id
@@ -395,20 +519,164 @@ function Talky_Window:page_webhooks(page)
         y = y + ROW * 2 + 16
     end
 
-    -- Read only: a dedicated token lives in bridge/config.json (the game cannot read it); the
-    -- bridge lists in talky_status.json which webhooks have one, never the token.
-    Talky_UI.label(page, x, y, Talky_T("Hooks_TokenTitle"), C.muted)
-    local dedicated = Talky_Settings.hasDedicatedToken(id)
-    local tokenKey = dedicated == true and "Hooks_TokenYes" or dedicated == false and "Hooks_TokenNo" or "Hooks_TokenUnknown"
-    Talky_UI.label(page, x, y + ROW, fit(Talky_T(tokenKey), w), dedicated == nil and C.muted or C.text)
-    Talky_UI.label(page, x, y + ROW * 2, fit(Talky_T("Hooks_TokenWhere"), w), C.muted)
-    y = y + ROW * 3 + 12
+    if solo then
+        -- Read only: a dedicated token lives in bridge/config.json (the game cannot read it); the
+        -- bridge lists in talky_status.json which webhooks have one, never the token.
+        Talky_UI.label(page, x, y, Talky_T("Hooks_TokenTitle"), C.muted)
+        local dedicated = Talky_Settings.hasDedicatedToken(id)
+        local tokenKey = dedicated == true and "Hooks_TokenYes" or dedicated == false and "Hooks_TokenNo" or "Hooks_TokenUnknown"
+        Talky_UI.label(page, x, y + ROW, fit(Talky_T(tokenKey), w), dedicated == nil and C.muted or C.text)
+        Talky_UI.label(page, x, y + ROW * 2, fit(Talky_T("Hooks_TokenWhere"), w), C.muted)
+        y = y + ROW * 3 + 12
+        Talky_UI.button(page, x, y, 200, Talky_T("Btn_CopyCommand"), self, function(win)
+            win:copyUrlCommand(id)
+        end, "primary")
+        y = y + ROW + 8
+    else
+        Talky_UI.label(page, x, y, fit(Talky_T("Hooks_ServerToken"), w), C.muted)
+        y = y + ROW + 8
+    end
+    Talky_UI.label(page, x, y, Talky_T("Hooks_BodyHint"), C.muted)
+    Talky_UI.label(page, x, y + ROW, Talky_T("Hooks_BodyExample"), C.text)
+end
 
-    Talky_UI.button(page, x, y, 200, Talky_T("Btn_CopyCommand"), self, function(win)
-        win:copyUrlCommand(id)
+-- Multiplayer, admins: the streamers of the server (their tokens, the address of the bridge)
+-- and the webhooks of the server's configuration.
+function Talky_Window:page_webhooks_mp(page)
+    title(page, Talky_T("Page_webhooks"))
+    local y = ROW + 10
+    if self:adminGate(page, y) then return end
+    self.hooksTab = self.hooksTab or "streamers"
+    Talky_UI.button(page, 0, y, 160, Talky_T("Tab_Streamers"), self, function(win)
+        win.hooksTab = "streamers"
+        win:showPage("webhooks")
+    end, self.hooksTab == "streamers" and "primary" or nil)
+    Talky_UI.button(page, 170, y, 160, Talky_T("Tab_Webhooks"), self, function(win)
+        win.hooksTab = "webhooks"
+        win:showPage("webhooks")
+    end, self.hooksTab == "webhooks" and "primary" or nil)
+    y = y + ROW + 10
+    if self.hooksTab == "webhooks" then
+        Talky_UI.label(page, 0, y, fit(Talky_T("Hooks_IntroServer"), page.width), C.muted)
+        return self:webhookEditor(page, y + ROW + 6, false)
+    end
+    self:streamersPanel(page, y)
+end
+
+-- The streamers: add one (a username), then, for the selected one, what goes into their
+-- LibertyTalk widget. The token is masked until "Show token"; Copy puts the address and the
+-- token in the clipboard, to send to the streamer (never on stream).
+function Talky_Window:streamersPanel(page, y)
+    local R = Talky_Remote
+    local d = self:data()
+    local w = page.width
+    -- a fresh list (prerender asks again every 3 s while this page is open)
+    local asked = R.streamersAskedAt
+    if not R.streamers or not asked or getTimestampMs() - asked >= 3000 or getTimestampMs() < asked then R.askStreamers() end
+    Talky_UI.label(page, 0, y, fit(Talky_T("Stream_Address"), w), C.muted)
+    y = y + ROW
+    Talky_UI.entry(page, 0, y, w, d.publicUrl or "", self, function(win, text)
+        d.publicUrl = text
+        win:markDirty()
+    end)
+    y = y + ROW + 2
+    Talky_UI.label(page, 0, y, fit(Talky_T("Stream_AddressHelp"), w), C.muted)
+    Talky_UI.label(page, 0, y + ROW, fit(Talky_T("Stream_AddressHttps"), w), C.muted)
+    y = y + ROW * 2 + 6
+    local s = R.streamers
+    if s and not s.bridge then
+        Talky_UI.label(page, 0, y, fit(Talky_T("Stream_BridgeOff"), w), C.bad)
+        y = y + ROW
+    end
+    local listW = 220
+    local top = y
+    local by = page.height - ROW * 2 - 6
+    local list = Talky_UI.list(page, 0, y, listW, by - y - 6, self, function(win, name)
+        if name then
+            win.selectedStreamer = name
+            win.showToken = false
+            win:showPage("webhooks")
+        end
+    end)
+    local entry
+    for _, e in ipairs(s and s.list or {}) do
+        list:addItem(e.online and Talky_T("Stream_Online", e.name) or e.name, e.name)
+        if self.selectedStreamer and TalkyNet.nameKey(e.name) == TalkyNet.nameKey(self.selectedStreamer) then
+            list.selected = #list.items
+            entry = e
+        end
+    end
+    if #list.items == 0 then list:addItem(Talky_T("Stream_None"), nil) end
+    Talky_UI.entry(page, 0, by, listW, self.newStreamer or "", self, function(win, text) win.newStreamer = text end)
+    Talky_UI.button(page, 0, by + ROW + 6, listW, Talky_T("Btn_AddStreamer"), self, function(win)
+        local name = string.match(tostring(win.newStreamer or ""), "^%s*(.-)%s*$") or ""
+        if name == "" then return end
+        if R.streamerOp("add", name) then
+            win.selectedStreamer = name
+            win.newStreamer = ""
+            win.showToken = false
+            win:showPage("webhooks")
+        end
     end, "primary")
-    Talky_UI.label(page, x, y + ROW + 8, Talky_T("Hooks_BodyHint"), C.muted)
-    Talky_UI.label(page, x, y + ROW * 2 + 8, Talky_T("Hooks_BodyExample"), C.text)
+
+    local x, dw = listW + 20, w - listW - 20
+    if not entry then
+        local key = self.selectedStreamer and "Stream_Pending" or "Stream_SelectLeft"
+        Talky_UI.label(page, x, top, fit(Talky_T(key, tostring(self.selectedStreamer)), dw), C.muted)
+        return
+    end
+    local addr = Talky_Settings.streamerAddress()
+    local yy = top
+    Talky_UI.label(page, x, yy, fit(entry.online and Talky_T("Stream_Online", entry.name) or entry.name, dw), C.text, UIFont.Medium)
+    yy = yy + ROW + 6
+    Talky_UI.label(page, x, yy, fit(Talky_T("Stream_ForWidget"), dw), C.muted)
+    yy = yy + ROW
+    local token = self.showToken and entry.token or "*****"
+    if addr then
+        Talky_UI.label(page, x, yy, fit(Talky_T("Stream_WidgetUrl", addr), dw), C.text)
+    else
+        Talky_UI.label(page, x, yy, fit(Talky_T("Stream_AddressMissing"), dw), C.bad)
+    end
+    yy = yy + ROW
+    Talky_UI.label(page, x, yy, fit(Talky_T("Stream_WidgetToken", token), dw), C.text)
+    yy = yy + ROW + 6
+    if addr then
+        -- the form of a webhook URL, for a LibertyTalk workflow written by hand
+        Talky_UI.label(page, x, yy, fit(Talky_T("Stream_HookUrl"), dw), C.muted)
+        Talky_UI.label(page, x, yy + ROW, fit(addr .. "/hooks/follow?token=" .. token, dw), C.muted)
+        yy = yy + ROW * 2 + 6
+    end
+    local bw = math.floor((dw - 10) / 2)
+    Talky_UI.button(page, x, yy, bw, Talky_T(self.showToken and "Btn_HideToken" or "Btn_ShowToken"), self, function(win)
+        win.showToken = not win.showToken
+        win:showPage("webhooks")
+    end)
+    Talky_UI.button(page, x + bw + 10, yy, bw, Talky_T("Btn_CopyForStreamer"), self, function(win)
+        win:copyForStreamer(entry)
+    end, "primary")
+    yy = yy + ROW + 6
+    Talky_UI.button(page, x, yy, bw, Talky_T("Btn_NewToken"), self, function(win)
+        R.streamerOp("token", entry.name)
+        win.showToken = false
+    end)
+    Talky_UI.button(page, x + bw + 10, yy, bw, Talky_T("Btn_RemoveStreamer"), self, function(win)
+        R.streamerOp("remove", entry.name)
+        win.selectedStreamer = nil
+        win:showPage("webhooks")
+    end, "danger")
+    yy = yy + ROW + 8
+    Talky_UI.label(page, x, yy, fit(Talky_T("Stream_CopyHelp"), dw), C.muted)
+end
+
+-- The two values of the streamer's LibertyTalk widget, one per line.
+function Talky_Window:copyForStreamer(entry)
+    local addr = Talky_Settings.streamerAddress()
+    if not addr then
+        Talky_Overlay.toast(Talky_T("Stream_AddressMissing"), "#ff5555", 4)
+        return
+    end
+    Clipboard.setClipboard(Talky_T("Stream_WidgetUrl", addr) .. "\n" .. Talky_T("Stream_WidgetToken", entry.token))
+    Talky_Overlay.toast(Talky_T("Toast_StreamerCopied", entry.name), "#8b5cf6", 5)
 end
 
 ---------------------------------------------------------------- page: workflows
@@ -420,9 +688,10 @@ local function newWorkflowName(d, base)
 end
 
 function Talky_Window:page_workflows(page)
-    local d = self:data()
     title(page, Talky_T("Page_workflows"))
     local y = ROW + 10
+    if self:adminGate(page, y) then return end
+    local d = self:data()
     local listW = 200
     local list = Talky_UI.list(page, 0, y, listW, page.height - y - ROW * 2 - 14, self, function(win, name)
         win.selectedWf = name
@@ -578,7 +847,8 @@ function Talky_Window:page_workflows(page)
     Talky_UI.button(page, x + 320, y, 140, Talky_T("Btn_TestNow"), self, function(win)
         if win.dirty then win:onSave() end -- the bridge runs the saved version
         Talky_Settings.testWorkflow(name, { user = testEntry:getText(), user_name = testEntry:getText(), bits = 500, viewers = 10, tier = "1000" })
-        Talky_Overlay.toast(Talky_T("Toast_TestSent", name), "#8b5cf6", 3)
+        -- multiplayer: the bridge of the server runs it around this admin
+        Talky_Overlay.toast(Talky_T(Talky_Settings.mp() and "Toast_TestSentServer" or "Toast_TestSent", name), "#8b5cf6", 3)
     end, "primary")
     Talky_UI.button(page, x + w - 150, y, 150, Talky_T("Btn_WorkflowJson"), self, function(win)
         Talky_JsonEditor.open(Talky_T("Wf_JsonTitle", name), Talky_T("Wf_JsonHelp"), wf, function(v)
@@ -592,10 +862,11 @@ end
 ---------------------------------------------------------------- page: game events
 
 function Talky_Window:page_events(page)
-    local d = self:data()
     title(page, Talky_T("Page_events"))
     local y = ROW + 10
-    Talky_UI.label(page, 0, y, Talky_T("Events_Intro"), C.muted)
+    if self:adminGate(page, y) then return end
+    local d = self:data()
+    Talky_UI.label(page, 0, y, fit(Talky_T(Talky_Settings.mp() and "Events_IntroServer" or "Events_Intro"), page.width), C.muted)
     y = y + ROW + 14
     for _, ev in ipairs(GAME_EVENTS) do
         Talky_UI.label(page, 0, y, Talky_T(ev.labelKey), C.text)
@@ -612,62 +883,71 @@ end
 
 ---------------------------------------------------------------- page: settings
 
+-- Multiplayer: the caps come from the server (read only), the display settings are this
+-- player's (talky_client.json), the settings of the bridge (language, anonymous name) are the
+-- server's configuration, for the admins.
 function Talky_Window:page_settings(page)
-    local d = self:data()
-    if type(d.settings) ~= "table" then d.settings = {} end
     title(page, Talky_T("Page_settings"))
     local y = ROW + 16
-    -- In multiplayer the server's sandbox options set the limits: shown, not editable.
-    local mp = TalkyNet.mode() == "client"
-    local serverCaps = mp and Talky_Bridge.serverStatus().caps or nil
+    local mp = Talky_Settings.mp()
+    local serverCaps = mp and Talky_Remote.status and Talky_Remote.status.caps or nil
+    local editServer = not mp or Talky_Settings.ready()
     if mp then
         Talky_UI.label(page, 0, y, Talky_UI.truncate(Talky_T("Settings_ServerNote"), page.width), C.muted)
         y = y + ROW + 6
     end
     for _, opt in ipairs(Talky_Config.editable) do
-        local value = d.settings[opt.key]
-        if value == nil then value = Talky_Config[opt.key] end
-        local label = Talky_T(opt.labelKey)
-        if mp and opt.server then
-            Talky_UI.label(page, 0, y, label, C.text)
-            local v = serverCaps and serverCaps[opt.server]
-            Talky_UI.label(page, 360, y, Talky_T("Settings_ServerValue", v ~= nil and tostring(v) or "?"), C.muted)
-        elseif opt.type == "bool" then
-            Talky_UI.tick(page, 0, y, page.width, label, value == true, self, function(win, on)
-                d.settings[opt.key] = on
-                win:markDirty()
-            end)
-        elseif opt.type == "choice" then
-            Talky_UI.label(page, 0, y, label, C.text)
-            local opts = {}
-            for _, c in ipairs(opt.choices) do opts[#opts + 1] = { Talky_T(c[1]), c[2] } end
-            Talky_UI.combo(page, 360, y, 200, opts, value, self, function(win, v)
-                d.settings[opt.key] = v
-                win:markDirty()
-            end)
-        elseif opt.type == "text" then
-            Talky_UI.label(page, 0, y, label, C.text)
-            Talky_UI.entry(page, 360, y, 200, tostring(value or ""), self, function(win, text)
-                d.settings[opt.key] = TalkyNet.cut(text, opt.maxLength or 40)
-                win:markDirty()
-            end)
-        else
-            Talky_UI.label(page, 0, y, label, C.text)
-            local e = Talky_UI.entry(page, 360, y, 120, tostring(value), self, function(win, text)
-                local n = tonumber(text)
-                if n then
-                    if opt.min and n < opt.min then n = opt.min end
-                    if opt.max and n > opt.max then n = opt.max end
-                    d.settings[opt.key] = n
+        local shown = not mp or opt.server or Talky_Settings.DISPLAY[opt.key] or editServer
+        if shown then
+            local s = Talky_Settings.settingsFor(opt.key)
+            local value = s[opt.key]
+            if value == nil then value = Talky_Config[opt.key] end
+            local label = Talky_T(opt.labelKey)
+            if mp and opt.server then
+                Talky_UI.label(page, 0, y, label, C.text)
+                local v = serverCaps and serverCaps[opt.server]
+                Talky_UI.label(page, 360, y, Talky_T("Settings_ServerValue", v ~= nil and tostring(v) or "?"), C.muted)
+            elseif opt.type == "bool" then
+                Talky_UI.tick(page, 0, y, page.width, label, value == true, self, function(win, on)
+                    s[opt.key] = on
                     win:markDirty()
-                end
-            end)
-            e:setOnlyNumbers(true)
-            if opt.min then Talky_UI.label(page, 495, y, opt.min .. " - " .. opt.max, C.muted) end
+                end)
+            elseif opt.type == "choice" then
+                Talky_UI.label(page, 0, y, label, C.text)
+                local opts = {}
+                for _, c in ipairs(opt.choices) do opts[#opts + 1] = { Talky_T(c[1]), c[2] } end
+                Talky_UI.combo(page, 360, y, 200, opts, value, self, function(win, v)
+                    s[opt.key] = v
+                    win:markDirty()
+                end)
+            elseif opt.type == "text" then
+                Talky_UI.label(page, 0, y, label, C.text)
+                Talky_UI.entry(page, 360, y, 200, tostring(value or ""), self, function(win, text)
+                    s[opt.key] = TalkyNet.cut(text, opt.maxLength or 40)
+                    win:markDirty()
+                end)
+            else
+                Talky_UI.label(page, 0, y, label, C.text)
+                local e = Talky_UI.entry(page, 360, y, 120, tostring(value), self, function(win, text)
+                    local n = tonumber(text)
+                    if n then
+                        if opt.min and n < opt.min then n = opt.min end
+                        if opt.max and n > opt.max then n = opt.max end
+                        s[opt.key] = n
+                        win:markDirty()
+                    end
+                end)
+                e:setOnlyNumbers(true)
+                if opt.min then Talky_UI.label(page, 495, y, opt.min .. " - " .. opt.max, C.muted) end
+            end
+            y = y + ROW + 10
         end
-        y = y + ROW + 10
     end
     y = y + 10
     Talky_UI.label(page, 0, y, Talky_T("Settings_Shortcut"), C.muted)
-    Talky_UI.label(page, 0, y + ROW, Talky_T("Settings_File", Talky_Config.configFile), C.muted)
+    if mp then
+        Talky_UI.label(page, 0, y + ROW, fit(Talky_T("Settings_FileServer", Talky_Config.clientFile), page.width), C.muted)
+    else
+        Talky_UI.label(page, 0, y + ROW, Talky_T("Settings_File", Talky_Config.configFile), C.muted)
+    end
 end

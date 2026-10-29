@@ -1,18 +1,19 @@
--- Runs the jobs accepted by Talky_Server, on the server (and in single player, where
--- server/ files run too). A job is an ordered list of steps; steps run one after another,
--- "wait" pauses the job without blocking the others.
---   queues   : one per streamer (TalkyNet.userKey), each with its waiting and running jobs
+-- Runs the jobs Talky_Inbox accepted, on the server (and in single player, where server/
+-- files run too). A job is an ordered list of steps; steps run one after another, "wait"
+-- pauses the job without blocking the others.
+--   queues   : one per streamer (TalkyNet.nameKey of the username), each with its waiting and
+--              running jobs
 --   owner    : the IsoPlayer is looked up again on every tick (a reconnect creates a new one);
 --              while the owner is offline or dead their jobs do not move. An empty server
 --              paused by PauseEmpty runs no tick at all: that time counts as offline too.
---   rules    : on a server the permission and the category toggles are checked again on
---              every tick, so a streamer taken off the list, or a category turned off, also
+--   rules    : on a server the streamer list and the category toggles are checked again on
+--              every tick, so a streamer an admin removed, or a category turned off, also
 --              stops the jobs already accepted
 --   budgets  : on a server, zombies / items / vehicles / XP / fires / sounds per 10 minutes and
 --              per job, server-wide cooldowns, at most Talky_Config.zombiesPerTick zombies per
 --              tick; banners shown to everyone and "say" lines per minute
---   results  : job_done, action_failed, job_expired and job_rejected go back to the owner's
---              client, which writes them for the bridge (with the job id, never written)
+--   results  : job_done, action_failed, job_expired and job_rejected are written to the outbox
+--              for the bridge, with the streamer in server mode (Talky_Files)
 -- Runs on the server and in single player only.
 
 if isClient() then return end
@@ -20,6 +21,8 @@ if isClient() then return end
 require "Talky/Talky_Config"
 require "Talky/Talky_Net"
 require "Talky/Talky_Actions"
+require "Talky/Talky_Files"
+require "Talky/Talky_Streamers"
 require "Talky/Talky_Tags"
 
 Talky_ServerRunner = {
@@ -168,7 +171,7 @@ function Talky_ServerRunner.canQueue(key, caps)
     return count("queued") < caps.maxQueuedJobsTotal
 end
 
--- run = { seq, id, workflow, user, steps, receivedAt, deadline }
+-- run = { seq, id, workflow, user, steps, receivedAt, deadline, test }
 function Talky_ServerRunner.enqueue(key, owner, run)
     local q = R.queues[key]
     if not q then
@@ -176,7 +179,7 @@ function Talky_ServerRunner.enqueue(key, owner, run)
         R.queues[key] = q
     end
     q.owner = owner
-    run.key = key
+    run.key, run.owner = key, owner
     run.index, run.resumeAt, run.zombies = 1, 0, 0
     run.job = { seq = run.seq, id = run.id, workflow = run.workflow, user = run.user }
     q.queued[#q.queued + 1] = run
@@ -186,21 +189,22 @@ function Talky_ServerRunner.pendingCount()
     return count("queued") + count("active")
 end
 
-local function emit(player, event, data)
-    if player then TalkyNet.toClient(player, "emit", { event = event, data = data }) end
+-- An event about a job, for the bridge (server mode: with the streamer it ran for).
+local function emit(run, event, data)
+    Talky_Files.streamerEvent(event, data, run.owner)
 end
 
--- Console lines about one job: through the per-player limiter of Talky_Server (one line per
--- reason a minute, 10 a minute per player), so one sender cannot flood the server log.
+-- Console lines about one job: through the per-player limiter (one line per reason a minute,
+-- 10 a minute per player), so one streamer's jobs cannot flood the server log.
 local function logRun(key, reason, msg)
     if TalkyNet.logLimited then TalkyNet.logLimited(key or "?", reason, msg) else TalkyNet.log(msg) end
 end
 
-local function fail(player, run, action, code, detail)
+local function fail(run, action, code, detail)
     logRun(run.key, "fail:" .. tostring(action) .. ":" .. tostring(code),
         "job " .. tostring(run.seq) .. ": " .. tostring(action) .. " failed (" .. tostring(code) .. ")"
         .. (detail and (": " .. detail) or ""))
-    emit(player, "action_failed", { seq = run.seq, action = action, code = code })
+    emit(run, "action_failed", { seq = run.seq, action = action, code = code, error = code })
 end
 
 -- Category of an action, as Talky_Actions.sanitizeStep reads it.
@@ -223,6 +227,7 @@ local function context(q, key, run, caps, t)
         cooldown = function(kind, ms) return cooldown(kind, ms, t) end,
         broadcastOk = function() return R.broadcastOk(key, t) end,
         sayOk = function() return R.sayOk(key, t) end,
+        emit = function(event, data) return Talky_Files.streamerEvent(event, data, run.owner) end,
     }
 end
 
@@ -243,7 +248,7 @@ local function advance(q, key, run, player, t, caps)
             if caps.enforce and not Talky_Config.categoryAllowed(stepCategory(Talky_Actions.meta[run.spawnAction]), caps) then
                 -- turned off while the spawn was in progress
                 endSpawn(run, ctx, plan)
-                fail(player, run, run.spawnAction, "disabled")
+                fail(run, run.spawnAction, "disabled")
             else
                 local n = math.min(R.tickBudget, plan.count - plan.done)
                 if n <= 0 then return false end
@@ -251,11 +256,11 @@ local function advance(q, key, run, player, t, caps)
                 local ok, err = pcall(Talky_Actions.spawnSome, plan, player, n, ctx)
                 if not ok then
                     endSpawn(run, ctx, plan)
-                    fail(player, run, run.spawnAction, "error", tostring(err))
+                    fail(run, run.spawnAction, "error", tostring(err))
                 elseif plan.done >= plan.count then
                     endSpawn(run, ctx, plan)
                     local code = Talky_Actions.spawnFailure(plan)
-                    if code then fail(player, run, run.spawnAction, code) end
+                    if code then fail(run, run.spawnAction, code) end
                 else
                     return false
                 end
@@ -272,44 +277,75 @@ local function advance(q, key, run, player, t, caps)
                 local meta = Talky_Actions.meta[action]
                 if caps.enforce and not Talky_Config.categoryAllowed(stepCategory(meta), caps) then
                     -- the category was turned off after the job was accepted
-                    fail(player, run, action, "disabled")
+                    fail(run, action, "disabled")
                 elseif meta and meta.spawn then
                     local ok, plan, code = pcall(Talky_Actions.planSpawn, step, player, ctx, meta.spawn)
                     if not ok then
-                        fail(player, run, action, "error", tostring(plan))
+                        fail(run, action, "error", tostring(plan))
                     elseif not plan then
-                        fail(player, run, action, code or "error")
+                        fail(run, action, code or "error")
                     else
                         run.spawn, run.spawnAction = plan, action
                     end
                 else
                     local code, detail = Talky_Actions.exec(step, player, run.job, ctx)
-                    if code then fail(player, run, action, code, detail) end
+                    if code then fail(run, action, code, detail) end
                 end
             end
         end
     end
-    emit(player, "job_done", { seq = run.seq, id = run.id, workflow = run.workflow })
+    emit(run, "job_done", { seq = run.seq, workflow = run.workflow })
     return true
 end
 
--- Queued jobs past their time to live are dropped (job_expired to the owner when online).
-local function expireQueued(q, player, t)
+-- Queued jobs past their time to live are dropped (job_expired), the owner online or not.
+local function expireQueued(q, t)
     for i = #q.queued, 1, -1 do
         local run = q.queued[i]
         if t > run.deadline then
             table.remove(q.queued, i)
             logRun(run.key, "expired", "job " .. tostring(run.seq) .. " expired before it could start")
-            emit(player, "job_expired", { seq = run.seq, id = run.id, workflow = run.workflow })
+            emit(run, "job_expired", { seq = run.seq, workflow = run.workflow })
         end
     end
 end
 
--- The jobs of a streamer the server no longer allows (taken off Talky.AllowedPlayers, role
--- changed): dropped, each one reported as refused.
-local function stillAllowed(player, caps)
-    if not caps.enforce or not Talky_Server or not Talky_Server.isAllowed then return true end
-    return Talky_Server.isAllowed(player)
+-- Every job of a queue, dropped: job_expired (offline too long) or job_rejected (reason).
+local function dropAll(q, reason)
+    for _, list in ipairs({ q.queued, q.active }) do
+        for _, run in ipairs(list) do
+            if reason then
+                emit(run, "job_rejected", { seq = run.seq, workflow = run.workflow, reason = reason })
+            else
+                emit(run, "job_expired", { seq = run.seq, workflow = run.workflow })
+            end
+        end
+    end
+    q.queued, q.active = {}, {}
+end
+
+-- Server mode: the jobs of a player who is no longer a streamer (an admin removed them) are
+-- dropped, each one reported as refused (not_streamer). A Test now of an admin stays while
+-- that admin is online and still an admin. Returns how many active jobs were dropped.
+local function dropNotStreamer(q, key, player)
+    if TalkyNet.mode() ~= "server" or Talky_Streamers.find(q.owner) then return 0 end
+    local admin = player ~= nil and Talky_Server ~= nil and Talky_Server.isAdmin ~= nil and Talky_Server.isAdmin(player)
+    local dropped, activeDropped = 0, 0
+    for _, name in ipairs({ "queued", "active" }) do
+        local keep = {}
+        for _, run in ipairs(q[name]) do
+            if run.test and (admin or player == nil) then
+                keep[#keep + 1] = run
+            else
+                emit(run, "job_rejected", { seq = run.seq, workflow = run.workflow, reason = "not_streamer" })
+                dropped = dropped + 1
+                if name == "active" then activeDropped = activeDropped + 1 end
+            end
+        end
+        q[name] = keep
+    end
+    if dropped > 0 then logRun(key, "not_streamer", "jobs of " .. tostring(q.owner) .. " dropped: no longer a streamer") end
+    return activeDropped
 end
 
 function Talky_ServerRunner.tick()
@@ -324,12 +360,14 @@ function Talky_ServerRunner.tick()
     local server = TalkyNet.mode() == "server"
     for key, q in pairs(R.queues) do
         local player = TalkyNet.findPlayer(q.owner)
+        if checkExpiry then activeTotal = activeTotal - dropNotStreamer(q, key, player) end
         if not player then
             q.offlineSince = q.offlineSince or t
-            if checkExpiry then expireQueued(q, nil, t) end
+            if checkExpiry then expireQueued(q, t) end
             if t - q.offlineSince > R.offlineDropMs then
                 TalkyNet.log("jobs of " .. tostring(q.owner) .. " dropped: offline for too long")
-                q.queued, q.active = {}, {}
+                activeTotal = activeTotal - #q.active
+                dropAll(q, nil)
             end
         else
             -- no tick ran since the owner was last seen (empty server paused by PauseEmpty):
@@ -338,25 +376,16 @@ function Talky_ServerRunner.tick()
             if server and gone and t - gone > R.offlineDropMs then
                 TalkyNet.log("jobs of " .. tostring(q.owner) .. " dropped: offline for too long")
                 activeTotal = activeTotal - #q.active
-                q.queued, q.active = {}, {}
+                dropAll(q, nil)
             end
             q.offlineSince = nil
             q.lastSeen = t
-            if checkExpiry then expireQueued(q, player, t) end
-            if not stillAllowed(player, caps) then
-                for _, list in ipairs({ q.queued, q.active }) do
-                    for _, run in ipairs(list) do
-                        emit(player, "job_rejected", { seq = run.seq, id = run.id, workflow = run.workflow, reason = "not_allowed" })
-                    end
-                end
-                logRun(key, "not_allowed", "jobs of " .. tostring(q.owner) .. " dropped: no longer allowed")
-                activeTotal = activeTotal - #q.active
-                q.queued, q.active = {}, {}
-            elseif not player:isDead() then
+            if checkExpiry then expireQueued(q, t) end
+            if not player:isDead() then
                 while #q.queued > 0 and #q.active < caps.maxActiveJobs and activeTotal < caps.maxActiveJobsTotal do
                     local run = table.remove(q.queued, 1)
                     if t > run.deadline then
-                        emit(player, "job_expired", { seq = run.seq, id = run.id, workflow = run.workflow })
+                        emit(run, "job_expired", { seq = run.seq, workflow = run.workflow })
                     else
                         q.active[#q.active + 1] = run
                         activeTotal = activeTotal + 1

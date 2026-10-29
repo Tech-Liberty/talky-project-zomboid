@@ -1,17 +1,32 @@
 #!/usr/bin/env node
 // Talky bridge: LibertyTalk webhooks -> Project Zomboid.
 //
-//   node bridge.js                                start the bridge
-//   node bridge.js fire <workflow> [key=value...] trigger a workflow on the running bridge (tests, Stream Deck...)
-//   node bridge.js url <webhook> [--show]         copy the full URL of a webhook (with its token) to the clipboard
+//   node bridge.js [--server | --solo]            start the bridge (mode of config.json by default)
+//   node bridge.js fire <workflow> [key=value...] trigger a workflow on the running bridge (tests, Stream Deck...);
+//                                                 in server mode, streamer=<username> names the character
+//   node bridge.js url <webhook> [--show]         copy the full URL of a webhook (with its token) to the clipboard;
+//                                                 in server mode, --streamer <username> picks the token
 //   node bridge.js new-token                      give the bridge a new random token in config.json
 //   node bridge.js version                        print the version
 //
-// bridge/config.json            : port, token, dedicated webhook tokens (hookTokens), http
+// Two modes ("mode" in config.json, or --server / --solo):
+//   solo   : on the player's PC, next to the game. Listens on 127.0.0.1 (a tunnel gives it a
+//            public https address), one token ("token"), the jobs run around the player.
+//   server : on the machine of the game server (a dedicated server, or the PC that hosts the
+//            game), with the server's Zomboid/Lua folder. Listens on every address (0.0.0.0).
+//            An admin adds the streamers in game (F8 > Webhooks): the server writes the request
+//            in the outbox, the bridge draws a token for each streamer (bridge/streamers.json)
+//            and copies the list to Zomboid/Lua/talky_streamers.json, which the server code
+//            reads to show the tokens to the admins. The token of a webhook call names the
+//            streamer: the job carries "target" = their username, and runs around them.
+//
+// bridge/config.json            : mode, port, token, dedicated webhook tokens (hookTokens), http
 //                                 targets and their secrets (httpTargets), allowed http hosts,
 //                                 poll source. Created on the first start from
 //                                 config.example.json, with a random token; an existing file is
 //                                 never replaced. The game cannot read it.
+// bridge/streamers.json         : server mode, the streamers and their tokens (the bridge's copy,
+//                                 the only one it trusts).
 // Zomboid/Lua/talky_config.json : webhooks, workflows, game events, settings - edited by the
 //                                 in-game window, reloaded here on every save (seeded from
 //                                 config.json on first run). Every mod running in the game can
@@ -44,7 +59,34 @@ const MAX_BODY = 65536;
 //   1 (bridge 0.3.0, no "protocol" field): outbox talky_outbox.jsonl, ack "S".
 //   2 (bridge 0.4.0): outbox talky_outbox.txt (the .jsonl one still read), ack "S s1 s2 ...",
 //     "testNonce" required in test_workflow, job_rejected / job_expired events.
-const PROTOCOL = 2;
+//   3 (bridge 0.5.0): "mode" in talky_status.json; server mode: jobs carry "target" (and
+//     "test"), game events carry "streamer", streamer_add / streamer_remove / streamer_token
+//     requests in the outbox, talky_streamers.json.
+const PROTOCOL = 3;
+
+const MODES = ['solo', 'server'];
+
+// Streamers of a server: at most this many, usernames of 1 to 64 characters.
+const MAX_STREAMERS = 200;
+const MAX_STREAMER_NAME = 64;
+
+// Requests the Talky server code writes in the outbox when an admin manages the streamers.
+const STREAMER_EVENTS = new Set(['streamer_add', 'streamer_remove', 'streamer_token']);
+
+// A-Z folded to a-z and nothing else: the account identity of the game (TalkyNet.nameKey of
+// the mod), so "Bob" and "bob" are one streamer, "Zoé" and "ZOÉ" two.
+const nameKey = (s) => String(s ?? '').replace(/[A-Z]/g, (c) => c.toLowerCase());
+
+// A username as the mod and the game write it: trimmed, 1 to 64 characters, no control
+// character. null otherwise.
+function streamerName(v) {
+  if (typeof v !== 'string') return null;
+  const s = v.trim();
+  if (s === '' || s.length > MAX_STREAMER_NAME || /[\u0000-\u001f\u007f]/.test(s)) return null;
+  return s;
+}
+
+const newStreamerToken = () => crypto.randomBytes(24).toString('hex');
 
 // Hides the Windows user name when the console is visible on stream.
 const displayPath = (p) => {
@@ -104,20 +146,21 @@ function copyToClipboard(text) {
   }
 }
 
-// config.example.json with the token and the language swapped in, its layout kept.
-// Rebuilt from the parsed example when these two lines are not found.
-function newConfigText(exampleText, token, language) {
+// config.example.json with the token, the language and the mode swapped in, its layout kept.
+// Rebuilt from the parsed example when these lines are not found.
+function newConfigText(exampleText, token, language, mode = 'solo') {
   const text = String(exampleText).replace(/^﻿/, '');
   const example = JSON.parse(text);
   const out = text
     .replace(JSON.stringify(PLACEHOLDER_TOKEN), JSON.stringify(token))
-    .replace(/("language"\s*:\s*)"[^"]*"/, `$1${JSON.stringify(language)}`);
+    .replace(/("language"\s*:\s*)"[^"]*"/, `$1${JSON.stringify(language)}`)
+    .replace(/("mode"\s*:\s*)"[^"]*"/, `$1${JSON.stringify(mode)}`);
   try {
     const check = JSON.parse(out);
-    if (check.token === token && check.settings && check.settings.language === language) return out;
+    if (check.token === token && check.settings && check.settings.language === language && check.mode === mode) return out;
   } catch { /* rebuilt below */ }
   const settings = example.settings && typeof example.settings === 'object' && !Array.isArray(example.settings) ? example.settings : {};
-  return `${JSON.stringify({ ...example, token, settings: { ...settings, language } }, null, 2)}\n`;
+  return `${JSON.stringify({ ...example, mode, token, settings: { ...settings, language } }, null, 2)}\n`;
 }
 
 const removeQuietly = (file) => {
@@ -126,11 +169,40 @@ const removeQuietly = (file) => {
   } catch { /* already gone */ }
 };
 
+const pauseSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+// text written to a temporary file (created with these permissions), then renamed over file.
+// Windows refuses the rename for a few ms while the game reads the file: tried again.
+function writeAtomic(file, text, mode = 0o644) {
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    const fd = fs.openSync(tmp, 'w', mode);
+    try {
+      fs.writeSync(fd, text);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    for (let i = 0; ; i++) {
+      try {
+        fs.renameSync(tmp, file);
+        break;
+      } catch (e) {
+        if (i >= 10 || !['EPERM', 'EBUSY', 'EACCES'].includes(e.code)) throw e;
+        pauseSync(25 + i * 10);
+      }
+    }
+  } catch (e) {
+    removeQuietly(tmp);
+    throw e;
+  }
+}
+
 // Creates config.json from config.example.json with a random token (24 bytes, 48 hex
 // characters). Written to a temporary file, then linked into place: the link fails when
 // config.json exists, so a file created in between is never replaced. Returns null in
 // that case.
-function createConfig(configPath, examplePath, language) {
+function createConfig(configPath, examplePath, language, mode = 'solo') {
   let exampleText;
   try {
     exampleText = fs.readFileSync(examplePath, 'utf8');
@@ -140,7 +212,7 @@ function createConfig(configPath, examplePath, language) {
   const token = crypto.randomBytes(24).toString('hex');
   let text;
   try {
-    text = newConfigText(exampleText, token, language);
+    text = newConfigText(exampleText, token, language, mode);
   } catch (e) {
     fail(`Cannot read ${displayPath(examplePath)}: ${e.message}`);
   }
@@ -166,7 +238,7 @@ function createConfig(configPath, examplePath, language) {
     fail(`Cannot create ${displayPath(configPath)}: ${e.message}. Move the Talky folder to a folder you can write to, for example Documents\\Talky.`);
   }
   removeQuietly(tmp);
-  return created ? { token, language } : null;
+  return created ? { token, language, mode } : null;
 }
 
 // ------------------------------------------------------------------ startup warnings
@@ -237,11 +309,25 @@ function workshopCopies(steamRoots) {
 }
 
 // zomboidDir: the Zomboid user folder (parent of zomboidLuaDir). bridgeDirs: the folders
-// of bridge.js and of config.json. needsTunnel: false in poll mode, which needs no public address.
-function startupWarnings({ zomboidDir, bridgeDirs = [__dirname, path.dirname(CONFIG_PATH)], needsTunnel = true, env = process.env, platform = process.platform, steamRoots } = {}) {
+// of bridge.js and of config.json. needsTunnel: false in poll mode, which needs no public
+// address, and in server mode, which listens on the server's own address. cfg: the loaded
+// config.json, for the warnings of server mode.
+function startupWarnings({ zomboidDir, bridgeDirs = [__dirname, path.dirname(CONFIG_PATH)], needsTunnel = true, env = process.env, platform = process.platform, steamRoots, cfg } = {}) {
   const warnings = [];
-  if (needsTunnel && !findOnPath('cloudflared', env, platform)) {
+  const server = cfg && cfg.mode === 'server';
+  if (needsTunnel && !server && !findOnPath('cloudflared', env, platform)) {
     warnings.push('cloudflared is not in the PATH. LibertyTalk reaches the bridge through a public https address, which cloudflared provides. Install it with "winget install --id Cloudflare.cloudflared", then open a new window.');
+  }
+  if (server) {
+    if (isLoopback(cfg.host)) {
+      warnings.push(`server mode, but the bridge listens on ${cfg.host} only: LibertyTalk cannot reach it, unless a reverse proxy of this machine forwards the calls to it. To listen on every address, set "host" to "" (or "0.0.0.0") in config.json.`);
+    }
+    if (isPlainObject(cfg.hookTokens) && Object.keys(cfg.hookTokens).length) {
+      warnings.push('"hookTokens" of config.json is ignored in server mode: each streamer calls the webhooks with their own token (F8 > Webhooks).');
+    }
+    if (cfg.poll && cfg.poll.enabled) {
+      warnings.push('"poll" of config.json is ignored in server mode: the activity feed names no streamer of the server.');
+    }
   }
   const modsDir = path.join(zomboidDir, 'mods');
   const manualCopy = path.join(modsDir, 'Talky');
@@ -259,6 +345,28 @@ function startupWarnings({ zomboidDir, bridgeDirs = [__dirname, path.dirname(CON
 }
 
 // ------------------------------------------------------------------ config
+
+const isLoopback = (host) => /^(127\.\d+\.\d+\.\d+|localhost|::1|\[::1\])$/i.test(String(host ?? '').trim());
+
+// "host" of config.json: "" or missing = 127.0.0.1 in solo mode (the tunnel connects locally),
+// 0.0.0.0 in server mode (LibertyTalk calls the server's address directly).
+function listenHost(cfg) {
+  const h = typeof cfg.host === 'string' ? cfg.host.trim() : '';
+  if (h !== '') return h;
+  return cfg.mode === 'server' ? '0.0.0.0' : '127.0.0.1';
+}
+
+// --server / --solo anywhere on the command line: { mode, args } (args without the flags).
+function modeFlag(argv) {
+  let mode;
+  const args = [];
+  for (const a of argv) {
+    if (a === '--server') mode = 'server';
+    else if (a === '--solo') mode = 'solo';
+    else args.push(a);
+  }
+  return { mode, args };
+}
 
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$/;
 const TARGET_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -321,14 +429,19 @@ function jobTtl(value) {
 // create: on the first start, config.json is created from config.example.json. The
 // token is copied to the clipboard and never printed (the window may be on stream).
 // warnings: a list that gets the warnings about config.json (logged once, at the start).
-function loadConfig({ create = false, warnings } = {}) {
+// mode: "server" or "solo" from the command line (--server, --solo), over the one of config.json.
+function loadConfig({ create = false, warnings, mode: flagMode } = {}) {
   if (!fs.existsSync(CONFIG_PATH)) {
-    if (!create) fail(`No config at ${displayPath(CONFIG_PATH)}. Start the bridge once (start-bridge.cmd): it creates config.json.`);
-    const made = createConfig(CONFIG_PATH, EXAMPLE_PATH, systemLanguage());
+    if (!create) fail(`No config at ${displayPath(CONFIG_PATH)}. Start the bridge once (start-bridge.cmd, or start-bridge.sh on Linux): it creates config.json.`);
+    const made = createConfig(CONFIG_PATH, EXAMPLE_PATH, systemLanguage(), flagMode || 'solo');
     if (made) {
-      log(`created ${displayPath(CONFIG_PATH)} with a random token (language: ${made.language})`);
+      log(`created ${displayPath(CONFIG_PATH)} with a random token (language: ${made.language}${made.mode === 'server' ? ', server mode' : ''})`);
       const where = copyToClipboard(made.token) ? 'in your clipboard and in config.json' : 'in config.json ("token")';
-      log(`the token is ${where}, never shown here: paste it into "Bridge token" in the LibertyTalk widget`);
+      if (made.mode === 'server') {
+        log(`the token of the bridge is ${where}, never shown here. Streamers do not need it: an admin gives each one their own token from the game (F8 > Webhooks)`);
+      } else {
+        log(`the token is ${where}, never shown here: paste it into "Bridge token" in the LibertyTalk widget`);
+      }
     }
   }
   let cfg;
@@ -338,6 +451,12 @@ function loadConfig({ create = false, warnings } = {}) {
   } catch (e) {
     fail(`Cannot read ${displayPath(CONFIG_PATH)}: ${e.message}`);
   }
+  if (!isPlainObject(cfg)) fail(`${displayPath(CONFIG_PATH)} must hold a JSON object.`);
+  if (cfg.mode !== undefined && !MODES.includes(cfg.mode)) fail('"mode" in config.json must be "solo" or "server".');
+  if (flagMode && cfg.mode !== undefined && cfg.mode !== flagMode && Array.isArray(warnings)) {
+    warnings.push(`config.json says "mode": "${cfg.mode}", the bridge was started with --${flagMode}: ${flagMode} mode for this run. Set "mode" to "${flagMode}" in config.json to keep it.`);
+  }
+  cfg.mode = flagMode || cfg.mode || 'solo';
   cfg.port ??= 7420;
   cfg.webhooks ??= {};
   cfg.workflows ??= {};
@@ -435,23 +554,25 @@ const isEventName = (v) => typeof v === 'string' && v.length > 0 && v.length <= 
 // Text from the game, before it reaches the console or the F8 Status page.
 const cleanText = (v, max) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, max) : '');
 
-// Jobs the game (or the server, in multiplayer) refused for good: it acknowledges them, so
-// they leave the inbox, and sends job_rejected { seq, workflow, reason }. job_expired { seq,
-// workflow } is a job that waited past its time to live before it could start.
+// Jobs the game (or the server code) refused for good: it acknowledges them, so they leave
+// the inbox, and writes job_rejected { seq, workflow, reason }. job_expired { seq, workflow }
+// is a job that waited past its time to live before it could start.
 const REJECT_HINTS = {
-  not_allowed: 'this player may not use Talky on this server. A server admin adds the username to the sandbox option Talky.AllowedPlayers, or gives the player the admin or moderator role. The host of a game can also press "Allow me" on the F8 Status page.',
-  invalid: 'the server could not read the job. Update Talky on this PC and on the server to the same version.',
-  duplicate: 'the server had already received this job.',
-  unknown_action: 'the server does not know an action of this job. Update Talky on the server.',
+  not_streamer: 'the job names no streamer of this server: the streamer was removed in F8 > Webhooks, or the bridge runs in solo mode next to a server (start it with --server, or set "mode": "server" in config.json).',
+  invalid: 'the game could not read the job. Update the bridge and the mod to the same version.',
+  unknown_action: 'the game does not know an action of this job. Update the mod to the version of the bridge.',
   disabled: 'an action of this job is turned off in the sandbox options of the server.',
   expired: 'the job waited longer than its time to live (jobTtlSeconds) before it could start.',
-  too_large: 'the job is too large for one network message of the game, so the game on this PC did not send it to the server. Give the workflow fewer steps (repeat counts too) or shorter texts.',
 };
 // Informative only: they never run gameEvents workflows. A workflow with game steps sent
-// after a refusal would be refused again, and again.
-const NO_WORKFLOW_EVENTS = new Set(['job_rejected', 'job_expired']);
+// after a refusal would be refused again, and again. The streamer requests are handled
+// apart (server mode).
+const NO_WORKFLOW_EVENTS = new Set(['job_rejected', 'job_expired', ...STREAMER_EVENTS]);
 
 const newNonce = () => crypto.randomBytes(16).toString('hex');
+
+// A game event older than this when the bridge reads it was written while it was stopped.
+const MAX_EVENT_AGE_MS = 10 * 60 * 1000;
 
 class Bridge {
   constructor(cfg) {
@@ -465,13 +586,24 @@ class Bridge {
     this.testNonce = newNonce();
     this.testRefusals = new Set(); // refusal reasons already logged since the start
     this.warned = new Set(); // keys of the warnings already logged since the start
+    this.staleEvents = 0; // old game events skipped since the last console line about them
+    this.staleLogAt = 0;
     // Read from bridge/config.json only: talky_config.json cannot widen them, and the
     // game cannot read them
     this.allowedHosts = Array.isArray(cfg.httpAllowedHosts) ? cfg.httpAllowedHosts : [...DEFAULT_HTTP_ALLOWED_HOSTS];
     this.httpTargets = isPlainObject(cfg.httpTargets) ? cfg.httpTargets : {};
-    this.hookTokens = isPlainObject(cfg.hookTokens) ? cfg.hookTokens : {};
+    this.mode = cfg.mode === 'server' ? 'server' : 'solo';
+    // Server mode: each streamer has their own token, a dedicated webhook token names nobody
+    this.hookTokens = this.mode === 'server' ? {} : (isPlainObject(cfg.hookTokens) ? cfg.hookTokens : {});
     this.gameConfigPath = path.join(cfg.zomboidLuaDir, 'talky_config.json');
     this.statusPath = path.join(cfg.zomboidLuaDir, 'talky_status.json');
+    // Server mode: the streamers and their tokens. bridge/streamers.json is the copy the bridge
+    // trusts; talky_streamers.json in Zomboid/Lua is written from it for the server code (the
+    // admins' F8 window), never read back.
+    this.streamersFile = path.join(path.dirname(CONFIG_PATH), 'streamers.json');
+    this.streamersMirror = path.join(cfg.zomboidLuaDir, 'talky_streamers.json');
+    this.streamers = [];
+    this.streamersRev = 0;
     this.link = new GameLink({
       luaDir: cfg.zomboidLuaDir,
       // Next to config.json, never in the mod folder (the Workshop rewrites it on update)
@@ -570,7 +702,12 @@ class Bridge {
     }
     this.gameConfigStamp = stamp;
     const cfg = { ...this.base };
-    for (const k of GAME_FIELDS) if (game[k] !== undefined) cfg[k] = game[k];
+    for (const k of GAME_FIELDS) {
+      if (game[k] === undefined) continue;
+      // an empty public URL of the game file leaves the one of config.json
+      if (k === 'publicUrl' && (typeof game[k] !== 'string' || game[k].trim() === '')) continue;
+      cfg[k] = game[k];
+    }
     // Kahlua writes empty objects for empty lists and the other way round
     for (const k of ['webhooks', 'workflows', 'gameEvents']) {
       if (!cfg[k] || typeof cfg[k] !== 'object' || Array.isArray(cfg[k])) cfg[k] = {};
@@ -613,6 +750,7 @@ class Bridge {
       ts: stopped ? 0 : Date.now(),
       version: VERSION,
       protocol: PROTOCOL,
+      mode: this.mode,
       ...(stopped ? { stopped: true } : { testNonce: this.testNonce }),
       session: this.link.state.session || '',
       port: this.base.port,
@@ -621,6 +759,7 @@ class Bridge {
       lastAck: this.link.lastAck,
       webhooks: Object.keys(this.cfg.webhooks),
       hookTokens: Object.keys(this.hookTokens),
+      ...(this.mode === 'server' ? { streamers: this.streamers.length } : {}),
       recent: this.recent.slice(0, 15),
     };
     const tmp = this.statusPath + '.tmp';
@@ -631,13 +770,19 @@ class Bridge {
   }
 
   remember(entry) {
-    this.recent.unshift({ at: new Date().toISOString(), ...entry });
+    const clean = {};
+    for (const [k, v] of Object.entries(entry)) if (v !== undefined) clean[k] = v;
+    this.recent.unshift({ at: new Date().toISOString(), ...clean });
     this.recent.length = Math.min(this.recent.length, 50);
   }
 
-  async runWorkflow(name, vars, source) {
+  // target: server mode, the username of the streamer whose character the game steps go to
+  // (the job's "target"); without one, the game steps are skipped (the http and log steps
+  // still run). isTest: a "Test now" of an admin, who may not be a streamer.
+  async runWorkflow(name, vars, source, { target, isTest = false } = {}) {
+    const streamer = this.mode === 'server' && target ? target : undefined;
     const skip = (reason) => {
-      this.remember({ source, workflow: name, user: vars.user, skipped: reason });
+      this.remember({ source, workflow: name, user: vars.user, streamer, skipped: reason });
       return { workflow: name, skipped: reason };
     };
     const wf = own(this.cfg.workflows, name);
@@ -646,10 +791,12 @@ class Bridge {
     if (!test(wf.when, vars)) return skip('condition');
     if (wf.chance !== undefined && wf.chance !== null && Math.random() >= Number(wf.chance)) return skip('chance');
 
+    // Server mode: cooldowns count per streamer (a "!zombie" on one stream does not hold the others)
     const now = Date.now();
+    const who = streamer ? `@${nameKey(streamer)}` : '';
     const keys = [];
-    if (wf.cooldownSeconds) keys.push([`wf:${name}`, wf.cooldownSeconds]);
-    if (wf.userCooldownSeconds) keys.push([`wf:${name}:${String(vars.user).toLowerCase()}`, wf.userCooldownSeconds]);
+    if (wf.cooldownSeconds) keys.push([`wf:${name}${who}`, wf.cooldownSeconds]);
+    if (wf.userCooldownSeconds) keys.push([`wf:${name}${who}:${String(vars.user).toLowerCase()}`, wf.userCooldownSeconds]);
     for (const [key, secs] of keys) {
       if (now - (this.lastRun.get(key) || 0) < secs * 1000) return skip('cooldown');
     }
@@ -660,9 +807,25 @@ class Bridge {
       log(`[${name}] ${dropped} step(s) dropped${truncated ? ', then the rest of the workflow skipped' : ''} (limits per job: ${LIMITS.gameStepsPerJob} game steps, ${LIMITS.bridgeStepsPerJob} http/log steps, ${LIMITS.visitedStepsPerJob} steps and loop turns walked through)`);
     }
     let seq;
-    if (game.length) seq = this.link.push(name, game, { user: vars.user }).seq;
-    log(`[${source}] ${name} -> ${game.length} game step(s)${seq ? ` (job #${seq})` : ''} user=${vars.user}`);
-    this.remember({ source, workflow: name, user: vars.user, job: seq, steps: game.length });
+    let noStreamer = false;
+    if (game.length) {
+      if (this.mode === 'server' && !streamer) {
+        noStreamer = true;
+      } else {
+        const meta = { user: vars.user };
+        if (streamer) meta.target = streamer;
+        if (streamer && isTest) meta.test = true;
+        seq = this.link.push(name, game, meta).seq;
+      }
+    }
+    const forWhom = streamer ? ` streamer=${cleanText(streamer, MAX_STREAMER_NAME)}` : '';
+    if (noStreamer) {
+      log(`[${source}] ${name}: ${game.length} game step(s) skipped, no streamer for this event (server mode) user=${vars.user}`);
+      this.remember({ source, workflow: name, user: vars.user, skipped: 'no streamer', steps: 0 });
+    } else {
+      log(`[${source}] ${name} -> ${game.length} game step(s)${seq ? ` (job #${seq})` : ''} user=${vars.user}${forWhom}`);
+      this.remember({ source, workflow: name, user: vars.user, streamer, job: seq, steps: game.length });
+    }
 
     // Bridge steps (http, log) run in the background: a slow http call must not delay
     // the reply to LibertyTalk (its webhook call gives up after 10 s).
@@ -671,7 +834,7 @@ class Bridge {
       this.pendingBridgeWork.add(work);
       work.finally(() => this.pendingBridgeWork.delete(work));
     }
-    return { workflow: name, job: seq, steps: game.length };
+    return { workflow: name, job: seq, steps: noStreamer ? 0 : game.length, ...(noStreamer ? { skipped: 'no streamer' } : {}) };
   }
 
   async runBridgeSteps(steps, ctx) {
@@ -748,9 +911,10 @@ class Bridge {
     return { url: check.url, method: String(a.method || 'POST').toUpperCase(), headers };
   }
 
-  // A webhook either names its workflow(s) or routes by payload fields.
-  async handleWebhook(id, hook, payload, query) {
-    const vars = this.varsFor(payload, { webhook: id, query });
+  // A webhook either names its workflow(s) or routes by payload fields. ctx.target: server
+  // mode, the streamer whose token the call carried ({{streamer}} in the templates).
+  async handleWebhook(id, hook, payload, query, ctx = {}) {
+    const vars = this.varsFor(payload, { webhook: id, query, ...(ctx.target ? { streamer: ctx.target } : {}) });
     let names = [];
     if (hook.routes) {
       const route = arr(hook.routes).find((r) => r && test(r.when, vars));
@@ -759,24 +923,34 @@ class Bridge {
       names = [].concat(hook.workflow || []);
     }
     if (!names.length) {
-      this.remember({ source: `hook:${id}`, user: vars.user, skipped: 'no matching route' });
+      this.remember({ source: `hook:${id}`, user: vars.user, streamer: ctx.target, skipped: 'no matching route' });
       return [{ skipped: 'no matching route' }];
     }
     const results = [];
-    for (const name of names) results.push(await this.runWorkflow(name, { ...vars }, `hook:${id}`));
+    for (const name of names) results.push(await this.runWorkflow(name, { ...vars }, `hook:${id}`, ctx));
     return results;
   }
 
   // A broken workflow (unknown filter, bad regex...) is logged and shown on the F8 Status
   // page; the other workflows of the event and the next events still run.
-  async runWorkflowSafely(name, vars, source) {
+  async runWorkflowSafely(name, vars, source, ctx = {}) {
     try {
-      return await this.runWorkflow(name, vars, source);
+      return await this.runWorkflow(name, vars, source, ctx);
     } catch (e) {
       log(`[${source}] ${name} failed:`, e.message);
-      this.remember({ source, workflow: name, user: vars.user, error: e.message });
+      this.remember({ source, workflow: name, user: vars.user, streamer: ctx.target, error: e.message });
       return { workflow: name, error: e.message };
     }
+  }
+
+  // Server mode: the streamer an event of the game is about ("streamer" of its data), when
+  // they are still a streamer of this server. Their canonical name, or undefined.
+  eventStreamer(data) {
+    if (this.mode !== 'server') return undefined;
+    const name = streamerName(data.streamer);
+    if (!name) return undefined;
+    const s = this.findStreamer(name);
+    return s ? s.name : undefined;
   }
 
   async handleGameEvent(evt) {
@@ -785,21 +959,148 @@ class Bridge {
       return { skipped: 'bad event' };
     }
     const data = evt.data && typeof evt.data === 'object' && !Array.isArray(evt.data) ? evt.data : {};
+    if (STREAMER_EVENTS.has(evt.event)) return this.streamerRequest(evt.event, data);
+    // Written while the bridge was stopped (the server code writes them whether it runs or
+    // not): a zombie killed hours ago must not spawn its cousins now. Streamer requests still count.
+    if (typeof evt.ts === 'number' && Number.isFinite(evt.ts) && Date.now() - evt.ts > MAX_EVENT_AGE_MS) {
+      this.staleEvents += 1;
+      if (!this.staleLogAt || Date.now() - this.staleLogAt >= 60000) {
+        this.staleLogAt = Date.now();
+        log(`[game] ${this.staleEvents} game event(s) older than 10 minutes skipped (written while the bridge was stopped)`);
+        this.staleEvents = 0;
+      }
+      return { event: evt.event, skipped: 'old' };
+    }
+    const target = this.eventStreamer(data);
     // "Test now" button of the in-game window. The window saves talky_config.json just
-    // before; the file watcher may not have seen it yet, so read it now.
+    // before; the file watcher may not have seen it yet, so read it now. Server mode: the
+    // server code writes it for the admin who pressed the button, who may not be a streamer.
     if (evt.event === 'test_workflow') {
       const refused = this.checkTestNonce(data);
       if (refused) return { workflow: data.workflow, skipped: refused };
       this.loadGameConfig();
-      return this.runWorkflowSafely(data.workflow, this.varsFor(data.vars || {}), 'test');
+      const tester = this.mode === 'server' ? streamerName(data.streamer) : undefined;
+      return this.runWorkflowSafely(data.workflow, this.varsFor(data.vars || {}, tester ? { streamer: tester } : {}), 'test',
+        tester ? { target: tester, isTest: !target } : {});
     }
     if (NO_WORKFLOW_EVENTS.has(evt.event)) return this.jobRefused(evt.event, data);
     const names = [].concat(own(this.cfg.gameEvents, evt.event) || []);
-    if (evt.event !== 'job_done') log(`[game] ${evt.event} ${JSON.stringify(data)}`);
+    if (evt.event !== 'job_done') log(`[game] ${evt.event} ${cleanText(JSON.stringify(data), 300)}`);
+    // the streamer of the event is the one of the new jobs ({{streamer}} in the templates)
+    const extra = { event: evt.event, ...(target ? { streamer: target } : {}) };
     for (const name of names) {
-      await this.runWorkflowSafely(name, this.varsFor(data, { event: evt.event }), `game:${evt.event}`);
+      await this.runWorkflowSafely(name, this.varsFor(data, extra), `game:${evt.event}`, target ? { target } : {});
     }
     return { event: evt.event, workflows: names.length };
+  }
+
+  // ---------------------------------------------------------------- streamers (server mode)
+
+  findStreamer(name) {
+    const key = nameKey(name);
+    return this.streamers.find((s) => nameKey(s.name) === key);
+  }
+
+  // Streamer whose token this is, or null. Every token is compared, in constant time.
+  streamerForToken(given) {
+    let found = null;
+    for (const s of this.streamers) {
+      if (safeEqual(given, s.token) && !found) found = s;
+    }
+    return found;
+  }
+
+  // bridge/streamers.json: { "streamers": [ { "name", "token", "createdAt" } ] }. A missing
+  // file is an empty list; an unreadable one too, with a warning (the file stays as it is
+  // until the next change).
+  loadStreamers() {
+    let saved;
+    try {
+      saved = JSON.parse(fs.readFileSync(this.streamersFile, 'utf8').replace(/^﻿/, ''));
+    } catch (e) {
+      if (e.code !== 'ENOENT') log(`warning: cannot read ${displayPath(this.streamersFile)} (${e.message}): no streamer until an admin adds one`);
+      saved = {};
+    }
+    const list = [];
+    const keys = new Set();
+    for (const s of Array.isArray(saved && saved.streamers) ? saved.streamers : []) {
+      const name = s && streamerName(s.name);
+      if (!name || typeof s.token !== 'string' || !/^[0-9a-f]{32,128}$/.test(s.token) || keys.has(nameKey(name))) continue;
+      keys.add(nameKey(name));
+      list.push({ name, token: s.token, createdAt: Number.isSafeInteger(s.createdAt) ? s.createdAt : 0 });
+      if (list.length >= MAX_STREAMERS) break;
+    }
+    this.streamers = list;
+    this.streamersRev = Number.isSafeInteger(saved && saved.rev) ? saved.rev : 0;
+  }
+
+  // Writes bridge/streamers.json, then its copy for the server code. Both atomically.
+  saveStreamers() {
+    this.streamersRev += 1;
+    const body = { rev: this.streamersRev, streamers: this.streamers };
+    writeAtomic(this.streamersFile, `${JSON.stringify(body, null, 2)}\n`, 0o600);
+    this.writeStreamersMirror();
+  }
+
+  // Zomboid/Lua/talky_streamers.json: what the server code shows to the admins. Rewritten at
+  // every start, so a copy someone edited never stays.
+  writeStreamersMirror() {
+    try {
+      fs.mkdirSync(path.dirname(this.streamersMirror), { recursive: true });
+      writeAtomic(this.streamersMirror, JSON.stringify({ rev: this.streamersRev, streamers: this.streamers }), 0o600);
+    } catch (e) {
+      log(`cannot write ${displayPath(this.streamersMirror)}: ${e.message}`);
+    }
+  }
+
+  // streamer_add / streamer_remove / streamer_token { name, by }: written by the Talky server
+  // code for an admin (F8 > Webhooks). Never a workflow; never a token in the console.
+  streamerRequest(event, data) {
+    const op = event.slice('streamer_'.length);
+    if (this.mode !== 'server') {
+      this.warnOnce('streamer-solo', `[game] ${event} ignored: the bridge runs in solo mode (streamers are for server mode: start it with --server)`);
+      return { event, skipped: 'solo mode' };
+    }
+    const name = streamerName(data.name);
+    const by = cleanText(typeof data.by === 'string' ? data.by : '', MAX_STREAMER_NAME) || '?';
+    if (!name) {
+      log(`[game] ${event} ignored: no valid username`);
+      return { event, skipped: 'bad name' };
+    }
+    const shown = cleanText(name, MAX_STREAMER_NAME);
+    const current = this.findStreamer(name);
+    if (op === 'add') {
+      if (current) {
+        log(`[game] streamer "${cleanText(current.name, MAX_STREAMER_NAME)}" already added (asked by ${by})`);
+        this.writeStreamersMirror();
+        return { event, name: current.name, skipped: 'exists' };
+      }
+      if (this.streamers.length >= MAX_STREAMERS) {
+        log(`[game] streamer "${shown}" not added: ${MAX_STREAMERS} streamers at most`);
+        return { event, skipped: 'full' };
+      }
+      this.streamers.push({ name, token: newStreamerToken(), createdAt: Date.now() });
+      this.saveStreamers();
+      log(`[game] streamer "${shown}" added by ${by}: their token is shown in F8 > Webhooks, to admins only`);
+      this.remember({ source: `game:${event}`, streamer: name, user: by });
+      return { event, name };
+    }
+    if (!current) {
+      log(`[game] ${event} ignored: "${shown}" is not a streamer (asked by ${by})`);
+      return { event, skipped: 'unknown' };
+    }
+    if (op === 'remove') {
+      this.streamers = this.streamers.filter((s) => s !== current);
+      this.saveStreamers();
+      log(`[game] streamer "${cleanText(current.name, MAX_STREAMER_NAME)}" removed by ${by}: their token no longer works`);
+    } else {
+      current.token = newStreamerToken();
+      current.createdAt = Date.now();
+      this.saveStreamers();
+      log(`[game] new token for streamer "${cleanText(current.name, MAX_STREAMER_NAME)}" (asked by ${by}): the old one no longer works, paste the new one into their LibertyTalk widget`);
+    }
+    this.remember({ source: `game:${event}`, streamer: current.name, user: by });
+    return { event, name: current.name };
   }
 
   // Returns null when test_workflow carries the nonce of this start, else the refusal reason.
@@ -835,13 +1136,12 @@ class Bridge {
     const origin = seq ? this.recent.find((e) => e.job === seq && !e.rejected) : undefined;
     const workflow = origin?.workflow ?? (cleanText(data.workflow, 64) || undefined);
     const hint = own(REJECT_HINTS, reason) || 'see the [Talky] lines of the server console.';
-    const what = `job${seq ? ` #${seq}` : ''}${workflow ? ` (${workflow})` : ''}`;
-    const outcome = reason === 'expired' ? 'expired'
-      : reason === 'too_large' ? 'not sent to the server: too_large'
-        : `refused by the server: ${reason}`;
+    const streamer = origin?.streamer ?? (this.mode === 'server' ? (streamerName(data.streamer) || undefined) : undefined);
+    const what = `job${seq ? ` #${seq}` : ''}${workflow ? ` (${workflow})` : ''}${streamer ? ` for ${cleanText(streamer, MAX_STREAMER_NAME)}` : ''}`;
+    const outcome = reason === 'expired' ? 'expired' : `refused by the server: ${reason}`;
     log(`[game] ${what} ${outcome} - ${hint}`);
     this.remember({
-      source: `game:${event}`, workflow, user: origin?.user, job: seq, rejected: reason,
+      source: `game:${event}`, workflow, user: origin?.user, streamer, job: seq, rejected: reason,
       error: reason === 'expired' ? 'expired before it could start' : outcome,
     });
     return { event, job: seq, rejected: reason };
@@ -852,7 +1152,7 @@ class Bridge {
   // LibertyTalk activity feed (GET https://<tenant>.api.<domain>/community/<id>/activity).
   startPolling() {
     const p = this.base.poll;
-    if (!p || !p.enabled) return;
+    if (!p || !p.enabled || this.mode === 'server') return;
     if (!p.url || /[<>]/.test(p.url) || !p.apiToken || /[<>]/.test(p.apiToken)) {
       log('poll: fill "poll.url" and "poll.apiToken" in config.json first (see README)');
       return;
@@ -902,6 +1202,19 @@ class Bridge {
     return safeEqual(given, typeof dedicated === 'string' && dedicated !== '' ? dedicated : this.base.token);
   }
 
+  // Who may call: { ok, streamer }. Solo mode: the bridge token (or the dedicated token of
+  // the webhook). Server mode: /hooks takes a streamer's token only, and that token names the
+  // streamer; /fire takes a streamer's token, or the bridge token with "streamer" in the body
+  // or the query.
+  caller(req, url, kind, id) {
+    if (this.mode !== 'server') return { ok: this.authorized(req, url, kind === 'hooks' ? id : undefined) };
+    const given = req.headers['x-bridge-token'] || url.searchParams.get('token');
+    const streamer = this.streamerForToken(given);
+    if (streamer) return { ok: true, streamer: streamer.name };
+    if (kind === 'fire' && safeEqual(given, this.base.token)) return { ok: true, bridgeToken: true };
+    return { ok: false };
+  }
+
   async handleRequest(req, res) {
     const send = (code, obj) => {
       res.writeHead(code, { 'Content-Type': 'application/json' });
@@ -912,7 +1225,7 @@ class Bridge {
       if (req.method === 'GET' && url.pathname === '/health') {
         if (!this.authorized(req, url)) return send(200, { ok: true });
         return send(200, {
-          ok: true, version: VERSION, protocol: PROTOCOL, pending: this.link.state.pending.length,
+          ok: true, version: VERSION, protocol: PROTOCOL, mode: this.mode, pending: this.link.state.pending.length,
           lastAck: this.link.lastAck, ackedAbove: this.link.ackedAbove, recent: this.recent,
         });
       }
@@ -928,7 +1241,8 @@ class Bridge {
 
       // Token first: without it, every webhook id answers 401, so ids cannot be guessed.
       const hook = kind === 'hooks' ? own(this.cfg.webhooks, id) : undefined;
-      if (!this.authorized(req, url, kind === 'hooks' ? id : undefined)) return send(401, { error: 'bad token' });
+      const who = this.caller(req, url, kind, id);
+      if (!who.ok) return send(401, { error: 'bad token' });
       if (kind === 'hooks' && (!hook || typeof hook !== 'object')) return send(404, { error: `unknown webhook "${id}"` });
 
       // Bytes are joined before decoding: a character split between two chunks stays whole.
@@ -949,26 +1263,48 @@ class Bridge {
       const payload = parseBody(Buffer.concat(chunks).toString('utf8'));
       const query = Object.fromEntries([...url.searchParams].filter(([k]) => k !== 'token'));
 
+      let target = who.streamer;
+      if (who.bridgeToken) {
+        // server mode, bridge token: the streamer is named in the call
+        const asked = streamerName(isPlainObject(payload) && payload.streamer !== undefined ? payload.streamer : query.streamer);
+        const found = asked && this.findStreamer(asked);
+        if (!found) return send(400, { error: 'server mode: name a streamer of this server with "streamer" (node bridge.js fire <workflow> streamer=<username>)' });
+        target = found.name;
+      }
+      const ctx = target ? { target } : {};
       const results = kind === 'hooks'
-        ? await this.handleWebhook(id, hook, payload, query)
-        : [await this.runWorkflow(id, this.varsFor({ ...query, ...payload }), 'fire')];
+        ? await this.handleWebhook(id, hook, payload, query, ctx)
+        : [await this.runWorkflow(id, this.varsFor({ ...query, ...payload }, target ? { streamer: target } : {}), 'fire', ctx)];
       send(200, { ok: true, results });
     } catch (e) {
       log('request error:', e.message);
-      send(500, { error: e.message });
+      // the text stays in this window: in server mode the caller is anyone on the internet
+      if (!res.headersSent) send(500, { error: 'internal error' });
     }
   }
 
   listen() {
-    const host = this.cfg.host || '127.0.0.1';
+    const host = listenHost({ host: this.base.host, mode: this.mode });
     this.server = http.createServer((req, res) => this.handleRequest(req, res));
+    // In server mode the port is open to the internet: slow or idle connections are closed
+    this.server.headersTimeout = 10000;
+    this.server.requestTimeout = 15000;
+    this.server.maxConnections = 64;
     this.server.on('error', (e) => {
-      if (e.code === 'EADDRINUSE') fail(`Port ${this.cfg.port} is already used. Change "port" in config.json (and in the cloudflared command).`);
+      if (e.code === 'EADDRINUSE') fail(`Port ${this.cfg.port} is already used. Change "port" in config.json${this.mode === 'server' ? ' (and in the address given to the streamers)' : ' (and in the cloudflared command)'}.`);
       fail(`Cannot listen on ${host}:${this.cfg.port}: ${e.message}`);
     });
     this.server.listen(this.cfg.port, host, () => {
-      log(`Talky bridge ${VERSION} listening on http://${host}:${this.cfg.port}`);
+      log(`Talky bridge ${VERSION} listening on http://${host}:${this.cfg.port}${this.mode === 'server' ? ' (server mode)' : ''}`);
       log(`game folder: ${displayPath(this.cfg.zomboidLuaDir)}`);
+      if (this.mode === 'server') {
+        const pub = typeof this.cfg.publicUrl === 'string' && this.cfg.publicUrl.trim() !== '' ? this.cfg.publicUrl.trim() : '';
+        log(`streamers: ${this.streamers.length}. An admin adds them in game: F8 > Webhooks (each one gets a token)`);
+        log(pub
+          ? `public address given to the streamers: ${cleanText(pub, 200)}`
+          : `public address: not set. An admin sets it in F8 > Webhooks (http://<public IP of this machine>:${this.cfg.port}), or "publicUrl" in config.json`);
+        log(`calls arrive in clear text (http): open the TCP port ${this.cfg.port} to the internet, or put a reverse proxy with https in front`);
+      }
       log(`http steps allowed to: ${this.allowedHosts.join(', ') || '(none)'}`);
       // Host only: the path of a LibertyTalk incoming webhook is its token
       const targets = Object.entries(this.httpTargets).map(([name, t]) => {
@@ -988,6 +1324,10 @@ class Bridge {
     this.testNonce = newNonce();
     this.testRefusals.clear();
     this.warned.clear();
+    if (this.mode === 'server') {
+      this.loadStreamers();
+      this.writeStreamersMirror();
+    }
     this.seedGameConfig();
     this.loadGameConfig();
     this.watchGameConfig();
@@ -1019,7 +1359,9 @@ async function fireCli(cfg, workflow, args) {
   const body = args[0]?.trim().startsWith('{')
     ? args[0]
     : JSON.stringify(Object.fromEntries(args.map((a) => [a.split('=')[0], a.split('=').slice(1).join('=')])));
-  const res = await fetch(`http://127.0.0.1:${cfg.port}/fire/${encodeURIComponent(workflow)}`, {
+  const host = listenHost(cfg);
+  const local = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : (host.includes(':') && !host.startsWith('[') ? `[${host}]` : host);
+  const res = await fetch(`http://${local}:${cfg.port}/fire/${encodeURIComponent(workflow)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Bridge-Token': cfg.token },
     body,
@@ -1031,7 +1373,7 @@ async function fireCli(cfg, workflow, args) {
 // token when masked. Built here, on the PC, never written to a file the game can read.
 // Webhooks, public URL: from talky_config.json, as the bridge loads them (config.json when
 // the game file has none). base: a public URL given on the command line instead.
-function webhookUrl(cfg, game, id, { base, masked = false } = {}) {
+function webhookUrl(cfg, game, id, { base, masked = false, streamer } = {}) {
   const webhooks = game.webhooks !== undefined ? (isPlainObject(game.webhooks) ? game.webhooks : {}) : (isPlainObject(cfg.webhooks) ? cfg.webhooks : {});
   const known = Object.keys(webhooks).sort();
   if (!id) return { error: `Usage: node bridge.js url <webhook> [--show] [--base <public URL>]. Webhooks: ${known.map((k) => cleanText(k, 64)).join(', ') || '(none)'}` };
@@ -1045,9 +1387,19 @@ function webhookUrl(cfg, game, id, { base, masked = false } = {}) {
   } catch {
     return { error: `The public URL "${cleanText(raw, 200)}" (${from}) is not a URL. Give it with --base https://<your tunnel address>.` };
   }
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') return { error: `The public URL (${from}) must start with https://.` };
-  const dedicated = own(cfg.hookTokens, id);
-  const token = typeof dedicated === 'string' && dedicated !== '' ? dedicated : cfg.token;
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return { error: `The public URL (${from}) must start with https:// or http://.` };
+  let token;
+  let tokenName;
+  if (cfg.mode === 'server') {
+    // server mode: the token of one streamer ({ name, token } of bridge/streamers.json)
+    if (!streamer) return { error: 'Server mode: add --streamer <username> (each streamer has their own token, F8 > Webhooks).' };
+    token = streamer.token;
+    tokenName = `the token of streamer "${cleanText(streamer.name, MAX_STREAMER_NAME)}" (bridge/streamers.json)`;
+  } else {
+    const dedicated = own(cfg.hookTokens, id);
+    token = typeof dedicated === 'string' && dedicated !== '' ? dedicated : cfg.token;
+    tokenName = token === cfg.token ? '"token"' : `"hookTokens" > "${cleanText(id, 64)}"`;
+  }
   // origin + path: no user:password@, query or #fragment from the stored text
   const prefix = `${url.origin}${url.pathname.replace(/\/+$/, '')}/hooks/${encodeURIComponent(id)}?token=`;
   return {
@@ -1055,8 +1407,18 @@ function webhookUrl(cfg, game, id, { base, masked = false } = {}) {
     masked: `${prefix}*****`,
     host: url.host,
     from,
-    tokenName: token === cfg.token ? '"token"' : `"hookTokens" > "${cleanText(id, 64)}"`,
+    tokenName,
   };
+}
+
+// The streamers of bridge/streamers.json, for the command line (the bridge may not run).
+function readStreamersFile(file = path.join(path.dirname(CONFIG_PATH), 'streamers.json')) {
+  try {
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, ''));
+    return Array.isArray(saved && saved.streamers) ? saved.streamers.filter((s) => s && streamerName(s.name) && typeof s.token === 'string') : [];
+  } catch {
+    return [];
+  }
 }
 
 function readGameConfigFile(cfg) {
@@ -1074,13 +1436,21 @@ function readGameConfigFile(cfg) {
 function urlCli(cfg, args) {
   let show = false;
   let base;
+  let streamerArg;
   const ids = [];
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--show') show = true;
     else if (args[i] === '--base') base = args[++i] ?? '';
+    else if (args[i] === '--streamer') streamerArg = args[++i] ?? '';
     else ids.push(args[i]);
   }
-  const r = webhookUrl(cfg, readGameConfigFile(cfg), ids[0], { base });
+  let streamer;
+  if (cfg.mode === 'server' && streamerArg !== undefined) {
+    const key = nameKey(String(streamerArg).trim());
+    streamer = readStreamersFile().find((s) => nameKey(s.name) === key);
+    if (!streamer) fail(`"${cleanText(String(streamerArg), MAX_STREAMER_NAME)}" is not a streamer of this server. An admin adds streamers in game: F8 > Webhooks.`);
+  }
+  const r = webhookUrl(cfg, readGameConfigFile(cfg), ids[0], { base, streamer });
   if (r.error) fail(r.error);
   if (show) {
     console.log(r.url);
@@ -1093,7 +1463,8 @@ function urlCli(cfg, args) {
     return;
   }
   console.log(`cannot copy to the clipboard here. URL: ${r.masked} (public URL ${where})`);
-  console.log(`the token is ${r.tokenName} in config.json; LibertyTalk can also send it in the X-Bridge-Token header. To print the full URL, add --show (not while this window is on stream).`);
+  const inFile = cfg.mode === 'server' ? r.tokenName : `${r.tokenName} in config.json`;
+  console.log(`the token is ${inFile}; LibertyTalk can also send it in the X-Bridge-Token header. To print the full URL, add --show (not while this window is on stream).`);
   process.exitCode = 1;
 }
 
@@ -1147,20 +1518,23 @@ function newTokenCli() {
 }
 
 if (require.main === module) {
-  const [cmd, ...rest] = process.argv.slice(2);
+  const { mode: flagMode, args: argv } = modeFlag(process.argv.slice(2));
+  const [cmd, ...rest] = argv;
   if (cmd === 'version' || cmd === '--version') {
     console.log(VERSION);
   } else if (cmd === 'fire') {
-    const cfg = loadConfig();
+    const cfg = loadConfig({ mode: flagMode });
     fireCli(cfg, rest[0], rest.slice(1)).catch((e) => fail(`Is the bridge running? ${e.message}`));
   } else if (cmd === 'url') {
-    urlCli(loadConfig(), rest);
+    urlCli(loadConfig({ mode: flagMode }), rest);
   } else if (cmd === 'new-token') {
     newTokenCli();
+  } else if (cmd !== undefined) {
+    fail(`Unknown command "${cleanText(cmd, 40)}". Commands: (none) to start the bridge, fire, url, new-token, version; options --server, --solo.`);
   } else {
     const configWarnings = [];
-    const cfg = loadConfig({ create: true, warnings: configWarnings });
-    for (const w of [...configWarnings, ...startupWarnings({ zomboidDir: path.dirname(cfg.zomboidLuaDir), needsTunnel: !(cfg.poll && cfg.poll.enabled) })]) log(`warning: ${w}`);
+    const cfg = loadConfig({ create: true, warnings: configWarnings, mode: flagMode });
+    for (const w of [...configWarnings, ...startupWarnings({ zomboidDir: path.dirname(cfg.zomboidLuaDir), needsTunnel: !(cfg.poll && cfg.poll.enabled), cfg })]) log(`warning: ${w}`);
     const bridge = new Bridge(cfg);
     bridge.start();
     // Ctrl+C, Ctrl+Break, the console window closed: the last status is written on the way
@@ -1176,4 +1550,5 @@ module.exports = {
   Bridge, parseBody, normalizePath, activityToPayload, render, hideHome, VERSION, PROTOCOL,
   systemLanguage, newConfigText, createConfig, findOnPath, workshopCopies, startupWarnings,
   REJECT_HINTS, httpTargetsError, hookTokensError, webhookUrl, rotateToken, jobTtl, MAX_JOB_TTL_SECONDS,
+  MODES, listenHost, modeFlag, nameKey, streamerName, MAX_STREAMERS, STREAMER_EVENTS,
 };

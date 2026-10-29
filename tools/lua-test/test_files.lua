@@ -29,8 +29,11 @@ for rel in pairs(sources) do
     if startsWith(rel, "client/") then clientModules[string.sub(rel, 8, string.len(rel) - 4)] = true end
 end
 local CLIENT_GLOBALS = { "Talky_Bridge", "Talky_Overlay", "Talky_Client", "Talky_Settings", "Talky_Window", "Talky_UI",
-                         "Talky_StepEditor", "Talky_JsonEditor", "Talky_Runner" }
-local SERVER_FORBIDDEN = { "getPlayerFromUsername", "isAdmin%s*%(", "isCoopHost", "hasAdminPower", "getAccessLevel" }
+                         "Talky_StepEditor", "Talky_JsonEditor", "Talky_Runner", "Talky_Remote" }
+-- the global isAdmin() (always false on a server), not Talky_Server.isAdmin
+local SERVER_FORBIDDEN = { "getPlayerFromUsername", "[^%w_%.:]isAdmin%s*%(", "isCoopHost", "hasAdminPower", "getAccessLevel" }
+-- the one server file that opens the bridge's files
+local SERVER_FILES = "server/Talky/Talky_Files.lua"
 
 for rel, text in pairs(sources) do
     for i = 1, string.len(text) do
@@ -48,7 +51,7 @@ for rel, text in pairs(sources) do
     end
     if startsWith(rel, "shared/") or startsWith(rel, "server/") then
         for _, f in ipairs({ "getFileReader", "getFileWriter", "getModFile" }) do
-            if string.find(c, f) then fileIO[#fileIO + 1] = rel .. " (" .. f .. ")" end
+            if string.find(c, f) and (rel ~= SERVER_FILES or f == "getModFile") then fileIO[#fileIO + 1] = rel .. " (" .. f .. ")" end
         end
         for _, g in ipairs(CLIENT_GLOBALS) do
             if string.find(c, g .. "[^%w_]") then clientNames[#clientNames + 1] = rel .. " (" .. g .. ")" end
@@ -64,18 +67,30 @@ end
 local function show(list) table.sort(list); return #list > 0 and (" (" .. table.concat(list, ", ") .. ")") or "" end
 check(#nonAscii == 0, "every Lua file is ASCII (Kahlua mangles accented characters in compiled strings)" .. show(nonAscii))
 check(#noGuard == 0, "every server/ file starts with 'if isClient() then return end' (server files also run on clients)" .. show(noGuard))
-check(#fileIO == 0, "shared/ and server/ files never open files (a hosted game's server shares Zomboid/Lua)" .. show(fileIO))
+check(#fileIO == 0, "shared/ files never open files, server/ files only through " .. SERVER_FILES .. show(fileIO))
 check(#clientNames == 0, "shared/ and server/ files never name or require a client/ module (it would run on the server)" .. show(clientNames))
 check(#forbidden == 0, "shared/ and server/ files never call getPlayerFromUsername, isAdmin, isCoopHost, hasAdminPower, getAccessLevel" .. show(forbidden))
 check(#badCalls == 0, "no next() (missing in this Kahlua) and no global ModData (R9)" .. show(badCalls))
--- talky_status.json carries no token since 0.4.0 and a webhook's token lives in bridge/config.json:
--- no code reads a "token" field (the window never builds nor copies a URL with a token)
+-- talky_status.json carries no token since 0.4.0 and a webhook's token lives in bridge/config.json.
+-- The tokens of the streamers of a server (0.5.0) are read by the server code that shows them
+-- to the admins and by the admins' window: no other file reads a "token" field.
+local TOKEN_READERS = { ["server/Talky/Talky_Streamers.lua"] = true, ["server/Talky/Talky_Server.lua"] = true,
+                        ["client/Talky/Talky_Remote.lua"] = true, ["client/Talky/UI/Talky_Window.lua"] = true }
 local tokenReads = {}
 for rel, text in pairs(sources) do
     local c = code(text)
-    if string.find(c, "%.token[^%w_]") or string.find(c, "%[%s*[\"']token[\"']%s*%]") then tokenReads[#tokenReads + 1] = rel end
+    if (string.find(c, "%.token[^%w_]") or string.find(c, "%[%s*[\"']token[\"']%s*%]")) and not TOKEN_READERS[rel] then tokenReads[#tokenReads + 1] = rel end
 end
-check(#tokenReads == 0, "no Lua file of the mod reads a token field (talky_status.json has none, webhook tokens stay in bridge/config.json)" .. show(tokenReads))
+check(#tokenReads == 0, "only the streamer list, its server commands and the admins' window read a token field" .. show(tokenReads))
+-- the relay of 0.4.0 is gone: no job crosses the network (the server reads the inbox itself)
+local relay = {}
+for rel, text in pairs(sources) do
+    local c = code(text)
+    for _, pat in ipairs({ 'toServer%(%s*"jobs"', 'toServer%(%s*"hello"', "jobAcks", "helloAck", "emitStep", "AllowedPlayers", "AllowAdmins" }) do
+        if string.find(c, pat) then relay[#relay + 1] = rel .. " (" .. pat .. ")" end
+    end
+end
+check(#relay == 0, "no trace of the 0.4.0 relay (jobs, hello, jobAcks, helloAck, emitStep, AllowedPlayers, AllowAdmins)" .. show(relay))
 
 ---------------------------------------------------------------- UI translations
 
@@ -120,14 +135,21 @@ local referenced, unknown = {}, {}
 local patterns = { 'Talky_T%("([%w_]+)"', 'getOrNil%("([%w_]+)"', 'labelKey%s*=%s*"([%w_]+)"', 'defaultKey%s*=%s*"([%w_]+)"', '{%s*"(Lang_%w+)"' }
 for _, src in pairs(sources) do
     for _, pat in ipairs(patterns) do
-        for key in string.gmatch(src, pat) do referenced[key] = true end
+        -- a name ending in "_" is the start of a key built at run time (below)
+        for key in string.gmatch(src, pat) do
+            if string.sub(key, -1) ~= "_" then referenced[key] = true end
+        end
     end
 end
--- keys built at run time: Reason_<code> (refusals for good; too_large = never sent by this game,
--- unknown = the bridge's word for a reason it could not read), Cat_<category> (F8 Status page)
-for _, r in ipairs({ "not_allowed", "invalid", "duplicate", "unknown_action", "disabled", "expired", "too_large", "unknown" }) do
+-- keys built at run time: Reason_<code> (refusals for good; unknown = the bridge's word for a
+-- reason it could not read), Cat_<category> (F8 Status page), Ack_ / Save_ / Test_<reason>
+-- (answers of the server to an admin)
+for _, r in ipairs({ "not_streamer", "invalid", "unknown_action", "disabled", "expired", "unknown" }) do
     referenced["Reason_" .. r] = true
 end
+for _, r in ipairs({ "invalid", "exists", "full", "unknown", "error" }) do referenced["Ack_" .. r] = true end
+for _, r in ipairs({ "too_large", "error", "invalid" }) do referenced["Save_" .. r] = true end
+for _, r in ipairs({ "bridge_offline", "invalid" }) do referenced["Test_" .. r] = true end
 for _, cat in ipairs({ "zombies", "items", "vehicles", "xp", "playerEffects", "weather", "time", "fire", "helicopter", "sounds" }) do
     referenced["Cat_" .. cat] = true
 end
