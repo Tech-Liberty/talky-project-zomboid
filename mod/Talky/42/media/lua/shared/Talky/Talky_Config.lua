@@ -18,7 +18,6 @@ Talky_Config = {
     configFile = "talky_config.json",   -- webhooks + workflows + settings, edited by the window, read by the bridge
     statusFile = "talky_status.json",   -- bridge -> game heartbeat
     streamersFile = "talky_streamers.json", -- bridge -> server: the streamers and their tokens (server mode)
-    clientFile = "talky_client.json",   -- multiplayer: this player's display settings (names, banners)
 
     pollIntervalMs = 1000,
 
@@ -70,14 +69,17 @@ Talky_Config = {
 
 -- Settings the window exposes, in display order. labelKey -> UI_Talky_<labelKey> in UI.json.
 -- "server" = name of the server limit shown instead in multiplayer (read only).
+-- "display" = a setting of the players' screens (names above zombies, banners). In multiplayer
+-- every client takes it from the settings of the server's talky_config.json (set by an admin
+-- in F8), sent with the "status" answer and again to everyone when an admin saves.
 Talky_Config.editable = {
     { key = "maxZombiesPerAction", labelKey = "Set_maxZombiesPerAction", type = "number", min = 1, max = 300, server = "maxZombiesPerAction" },
     { key = "maxActiveJobs",       labelKey = "Set_maxActiveJobs",       type = "number", min = 1, max = 50,  server = "maxActiveJobs" },
     { key = "maxSpawnDistance",    labelKey = "Set_maxSpawnDistance",    type = "number", min = 5, max = 150, server = "maxSpawnDistance" },
-    { key = "showNameTags",        labelKey = "Set_showNameTags",        type = "bool" },
-    { key = "nameTagRange",        labelKey = "Set_nameTagRange",        type = "number", min = 5, max = 80 },
-    { key = "toastSeconds",        labelKey = "Set_toastSeconds",        type = "number", min = 1, max = 30 },
-    { key = "toastY",              labelKey = "Set_toastY",              type = "number", min = 0, max = 1000 },
+    { key = "showNameTags",        labelKey = "Set_showNameTags",        type = "bool",   display = true },
+    { key = "nameTagRange",        labelKey = "Set_nameTagRange",        type = "number", min = 5, max = 80,  display = true },
+    { key = "toastSeconds",        labelKey = "Set_toastSeconds",        type = "number", min = 1, max = 30,  display = true },
+    { key = "toastY",              labelKey = "Set_toastY",              type = "number", min = 0, max = 1000, display = true },
     { key = "language",            labelKey = "Set_language",            type = "choice",
       choices = { { "Lang_en", "en" }, { "Lang_fr", "fr" } } },
     { key = "anonymousName",       labelKey = "Set_anonymousName",       type = "text", maxLength = 40 },
@@ -225,6 +227,24 @@ function Talky_Config.categoryAllowed(category, caps)
     local toggle = Talky_Config.categoryToggle[category]
     if not toggle then return true end
     return caps.sandbox[toggle] == true
+end
+
+-- The display settings of a "settings" table (talky_config.json), typed and clamped to the bounds
+-- of the window; missing or unreadable ones are left out (the client keeps its default).
+function Talky_Config.displayOf(settings)
+    local out = {}
+    if type(settings) ~= "table" then return out end
+    for _, opt in ipairs(Talky_Config.editable) do
+        if opt.display then
+            local v = settings[opt.key]
+            if opt.type == "bool" then
+                if type(v) == "boolean" then out[opt.key] = v end
+            else
+                out[opt.key] = clampNum(v, nil, opt.min, opt.max)
+            end
+        end
+    end
+    return out
 end
 
 -- Limits sent to the client in the "status" answer, shown read only on the F8 window (plain data).

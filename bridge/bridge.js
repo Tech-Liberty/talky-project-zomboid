@@ -571,9 +571,6 @@ const NO_WORKFLOW_EVENTS = new Set(['job_rejected', 'job_expired', ...STREAMER_E
 
 const newNonce = () => crypto.randomBytes(16).toString('hex');
 
-// A game event older than this when the bridge reads it was written while it was stopped.
-const MAX_EVENT_AGE_MS = 10 * 60 * 1000;
-
 class Bridge {
   constructor(cfg) {
     this.base = cfg;
@@ -586,8 +583,6 @@ class Bridge {
     this.testNonce = newNonce();
     this.testRefusals = new Set(); // refusal reasons already logged since the start
     this.warned = new Set(); // keys of the warnings already logged since the start
-    this.staleEvents = 0; // old game events skipped since the last console line about them
-    this.staleLogAt = 0;
     // Read from bridge/config.json only: talky_config.json cannot widen them, and the
     // game cannot read them
     this.allowedHosts = Array.isArray(cfg.httpAllowedHosts) ? cfg.httpAllowedHosts : [...DEFAULT_HTTP_ALLOWED_HOSTS];
@@ -960,17 +955,6 @@ class Bridge {
     }
     const data = evt.data && typeof evt.data === 'object' && !Array.isArray(evt.data) ? evt.data : {};
     if (STREAMER_EVENTS.has(evt.event)) return this.streamerRequest(evt.event, data);
-    // Written while the bridge was stopped (the server code writes them whether it runs or
-    // not): a zombie killed hours ago must not spawn its cousins now. Streamer requests still count.
-    if (typeof evt.ts === 'number' && Number.isFinite(evt.ts) && Date.now() - evt.ts > MAX_EVENT_AGE_MS) {
-      this.staleEvents += 1;
-      if (!this.staleLogAt || Date.now() - this.staleLogAt >= 60000) {
-        this.staleLogAt = Date.now();
-        log(`[game] ${this.staleEvents} game event(s) older than 10 minutes skipped (written while the bridge was stopped)`);
-        this.staleEvents = 0;
-      }
-      return { event: evt.event, skipped: 'old' };
-    }
     const target = this.eventStreamer(data);
     // "Test now" button of the in-game window. The window saves talky_config.json just
     // before; the file watcher may not have seen it yet, so read it now. Server mode: the

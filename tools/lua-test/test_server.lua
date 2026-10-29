@@ -944,7 +944,34 @@ check(okSave and RADM.lastSave and RADM.lastSave.ok and saved and saved.custom =
     "Save sends it to the server, which writes talky_config.json; the other keys of the file stay")
 check(saved and saved.workflows.deep.steps[1]["then"][1].steps[1]["then"][1].text == "deep" and type(saved.gameEvents) == "table",
     "nested steps survive the trip; an emptied list stays a list")
-check(ADM.fs["talky_config.json"] == nil and ADM.fs["talky_client.json"] ~= nil, "the admin's own Zomboid/Lua only gets the display settings")
+check(H.count(ADM.fs) == 0, "the admin's own Zomboid/Lua gets no file")
+
+section("dedicated server: display settings of the server's configuration")
+
+-- edited by hand in the server's file: every player takes them with the status
+local cfgNow = JSON.tryDecode(S.fs["talky_config.json"])
+cfgNow.settings = { language = "en", toastSeconds = 12, showNameTags = false, nameTagRange = 999, toastY = "x" }
+S.fs["talky_config.json"] = JSON.encode(cfgNow)
+for _, R in ipairs({ RA, RB, RADM }) do R.askStatus() end
+H.tick(3)
+check(B.E.Talky_Config.toastSeconds == 12 and B.E.Talky_Config.showNameTags == false and B.E.Talky_Config.nameTagRange == 80
+    and B.E.Talky_Config.toastY == 80 and A.E.Talky_Config.toastSeconds == 12 and ADM.E.Talky_Config.showNameTags == false,
+    "every player takes the display settings of the server's talky_config.json with the status (clamped; an unreadable one keeps the default)")
+-- an admin saves from F8: the server sends them to everyone at once
+RADM.askConfig()
+H.tick(3)
+ADM.E.Talky_Settings.load()
+ADM.E.Talky_Settings.get().settings.toastY = 321
+local okDisp = ADM.E.Talky_Settings.save()
+H.tick(3)
+local savedDisp = JSON.tryDecode(S.fs["talky_config.json"])
+check(okDisp and savedDisp.settings.toastY == 321 and B.E.Talky_Config.toastY == 321 and A.E.Talky_Config.toastY == 321
+    and ADM.E.Talky_Config.toastY == 321 and B.E.Talky_Config.toastSeconds == 12,
+    "an admin's Save writes them on the server and every player applies them without asking")
+local savedB, whyB = B.E.Talky_Settings.save()
+H.tick(3)
+check(savedB == false and whyB == "not_admin" and H.count(B.fs) == 0 and JSON.tryDecode(S.fs["talky_config.json"]).settings.toastY == 321,
+    "a player who is not an admin has nothing to save: no file, nothing sent")
 
 ---------------------------------------------------------------- the F8 window in multiplayer
 
@@ -1012,10 +1039,13 @@ for _, lang in ipairs({ "EN", "FR" }) do
     noMissing(B, lang .. " player")
     check(shownIn(B, B.E.Talky_T("Server_NotStreamer")) and shownIn(B, B.E.Talky_T("Admin_Only")) and shownIn(B, B.E.Talky_T("Settings_ServerValue", "30")),
         lang .. ": Status says not a streamer, the admin pages say they are reserved, Settings shows the server limits")
+    check(shownIn(B, B.E.Talky_T("Settings_ServerValue", "12")) and shownIn(B, B.E.Talky_T("Settings_ServerValue", "321"))
+        and shownIn(B, B.E.Talky_T("Settings_ServerValue", B.E.Talky_T("Value_Off"))),
+        lang .. ": Settings shows a player the display settings of the server, read only")
     local leaked = false
     for _, t in ipairs(B.ui.TEXTS) do if string.find(t, tokNow, 1, true) or string.find(t, H.tokenOf(S, "Mod"), 1, true) then leaked = true end end
-    check(not leaked and B.fs["talky_config.json"] == nil and B.fs["talky_client.json"] ~= nil,
-        lang .. ": no token on a player's screen; Save keeps the display settings in talky_client.json")
+    check(not leaked and H.count(B.fs) == 0,
+        lang .. ": no token on a player's screen; Save writes no file")
     -- the streamer
     A.lang = lang
     A.ui.TEXTS = {}
@@ -1025,6 +1055,14 @@ for _, lang in ipairs({ "EN", "FR" }) do
     A.E.Talky_Window.instance:close()
 end
 ADM.lang, B.lang, A.lang = "EN", "EN", "EN"
+-- the display settings back to the code's values: a setting the server's file does not have
+local cfgBack = JSON.tryDecode(S.fs["talky_config.json"])
+cfgBack.settings = { language = "en" }
+S.fs["talky_config.json"] = JSON.encode(cfgBack)
+for _, R in ipairs({ RA, RB, RADM }) do R.askStatus() end
+H.tick(3)
+check(B.E.Talky_Config.toastY == 80 and B.E.Talky_Config.toastSeconds == 6 and B.E.Talky_Config.showNameTags == true and A.E.Talky_Config.nameTagRange == 25,
+    "a display setting removed from the server's file: every player is back to the default")
 check(ADM.E.Talky_Settings.normalizeAddress("203.0.113.5", 7420) == "http://203.0.113.5:7420"
     and ADM.E.Talky_Settings.normalizeAddress("203.0.113.5:8000/", 7420) == "http://203.0.113.5:8000"
     and ADM.E.Talky_Settings.normalizeAddress("https://talky.example.com/", 7420) == "https://talky.example.com"

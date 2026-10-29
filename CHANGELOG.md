@@ -18,7 +18,6 @@ Server mode: on a server, the bridge runs on the machine of the server, and the 
 - Requests of the server in the outbox: `streamer_add`, `streamer_remove`, `streamer_token` `{ name, by }`. They never run a workflow, and are ignored in solo mode (one warning). A token is never printed.
 - Game events carry `streamer`: their workflows run for that streamer ({{streamer}} in the templates). An event without streamer (`game_started` of a server) runs only the `http` and `log` steps of its workflows. A Test now of an admin who is not a streamer gives a job marked `test`.
 - Cooldowns count per streamer in server mode.
-- Game events more than 10 minutes old when the bridge reads them are skipped (written while it was stopped), in both modes; the streamer requests are kept.
 - `talky_status.json`: `mode`, the number of streamers in server mode; protocol 3. `/health` gives the mode. `publicUrl` in `config.json` (the address given to the streamers); the one of `talky_config.json` wins only when it is not empty.
 - `hookTokens` and the poll mode are ignored in server mode (one warning each).
 
@@ -35,7 +34,7 @@ Server mode: on a server, the bridge runs on the machine of the server, and the 
 ### F8 window
 - Multiplayer: the window asks the server (`client/Talky/Talky_Remote.lua`): its answer, whether the player is a streamer or an admin, the state of the bridge of the server (offline, solo mode, older than 0.5.0), the limits, the last events of the bridge for the admins.
 - Webhooks, for the admins: **Streamers** tab (public address of the bridge, the list, + Add streamer, the two values of the widget of the selected streamer with the token masked, Show token, Copy URL and token, New token, Remove) and **Webhooks** tab (the webhooks of the server). Workflows, Game events and the settings of the bridge edit the `talky_config.json` of the server, loaded from it and saved to it; Test now runs around the admin. A player who is not an admin sees "Reserved to the admins of this server"; the host of a game who is not admin gets Allow me (host) there.
-- Multiplayer settings: the display settings (names above zombies, banners) are saved in `Zomboid/Lua/talky_client.json` of the player's PC; the caps are the server's, read only.
+- Multiplayer settings: the display settings (names above zombies, banners) are those of the server's `talky_config.json`, set by an admin in F8 > Settings. Every player gets them with the status and again as soon as an admin saves (`display` command); the other players see them read only. The caps are the server's, read only. The game of a player writes no file.
 - New and shorter texts in EN and FR `UI.json`, so that each line fits the window.
 
 ### Tests

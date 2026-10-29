@@ -2,14 +2,15 @@
 -- events the server writes for the bridge itself. The jobs never come from a client: the
 -- server reads them from the bridge's files (Talky_Inbox).
 -- Commands from the client (every one rate limited, 5 a second per player):
---   status                     -> status { mode, version, admin, streamer, caps, bridge, recent? }
+--   status                     -> status { mode, version, admin, streamer, caps, display, bridge, recent? }
+--                                 (display: the display settings of talky_config.json)
 --   tags                       -> tags { reset, list } (names above zombies, for late joiners)
 -- Admins only (role with the CreateHorde capability, checked here at every command):
 --   streamers                  -> streamers { list = { { name, token, online } }, port, publicUrl }
 --   streamer { op, name }      -> streamerAck { op, name, ok, reason }: op = add | remove | token,
 --                                 written to the outbox for the bridge (it draws the tokens)
 --   config                     -> config { data } or config { error } (talky_config.json)
---   saveConfig { data }        -> configSaved { ok, error }
+--   saveConfig { data }        -> configSaved { ok, error }, and display { settings } to every client
 --   test { workflow, vars }    -> testAck { ok, error }: test_workflow in the outbox, for the admin
 -- Answers carry reason codes only, never error texts. The tokens of the streamers only ever go
 -- to an admin who asked for them.
@@ -116,6 +117,25 @@ local function recentOf(st)
     return out
 end
 
+-- talky_config.json as a table (cached by its text), or nil and a reason.
+local function readConfig()
+    local text = Talky_Files.readText(Talky_Config.configFile)
+    if not text or text == "" then return {} end
+    if text ~= S.configText then
+        local data = TalkyJson.tryDecode(text)
+        if type(data) ~= "table" then return nil, "unreadable" end
+        S.configText, S.configData = text, data
+    end
+    return S.configData
+end
+
+-- The display settings of the server's configuration (names above zombies, banners): every
+-- client applies them.
+function Talky_Server.display()
+    local cfg = readConfig()
+    return Talky_Config.displayOf(cfg and cfg.settings)
+end
+
 ---------------------------------------------------------------- commands
 
 local commands = {}
@@ -129,6 +149,7 @@ commands.status = function(player, key, args, t)
         admin = admin,
         streamer = Talky_Streamers.isStreamer(player),
         caps = Talky_Config.publicCaps(),
+        display = S.display(),
         bridge = {
             alive = st.alive == true,
             version = TalkyNet.str(st.version, 16, ""),
@@ -199,19 +220,7 @@ commands.streamer = function(player, key, args, t)
     TalkyNet.toClient(player, "streamerAck", reply)
 end
 
--- talky_config.json as a table (cached by its text), or nil and a reason.
-local function readConfig()
-    local text = Talky_Files.readText(Talky_Config.configFile)
-    if not text or text == "" then return {} end
-    if text ~= S.configText then
-        local data = TalkyJson.tryDecode(text)
-        if type(data) ~= "table" then return nil, "unreadable" end
-        S.configText, S.configData = text, data
-    end
-    return S.configData
-end
-
-local CONFIG_KEYS = { "webhooks", "workflows", "gameEvents", "publicUrl", "settings" }
+local CONFIG_KEYS = {"webhooks", "workflows", "gameEvents", "publicUrl", "settings" }
 
 commands.config = function(player, key, args, t)
     if not S.isAdmin(player) then return refuse(player, "config") end
@@ -246,6 +255,8 @@ commands.saveConfig = function(player, key, args, t)
     if ok then
         S.configText, S.configData = nil, nil
         S.logFor(key, "saveConfig", "talky_config.json saved by " .. TalkyNet.username(player))
+        -- the display settings reach every player at once
+        TalkyNet.broadcast("display", { settings = Talky_Config.displayOf(merged.settings) })
     end
     TalkyNet.toClient(player, "configSaved", { ok = ok, error = not ok and "error" or nil })
 end

@@ -1582,12 +1582,9 @@ function H.hygiene(P, label)
         end
         check(#other == 0, label .. ": only Talky's own files are opened in Zomboid/Lua" .. (#other > 0 and (" (" .. list(other) .. ")") or ""))
     else
-        -- a client never touches the bridge's files: in a hosted game they are the server's
-        local bridgeFiles = {}
-        for _, e in ipairs(P.io) do
-            if not string.match(e, "^%a+ talky_client%.json$") then bridgeFiles[#bridgeFiles + 1] = e end
-        end
-        check(#bridgeFiles == 0, label .. ": a multiplayer client opens no file of the bridge" .. (#bridgeFiles > 0 and (" (" .. list(bridgeFiles) .. ")") or ""))
+        -- a client opens no file: the bridge's are the server's (even in a hosted game), and its
+        -- display settings come from the server's configuration
+        check(#P.io == 0, label .. ": a multiplayer client opens no file" .. (#P.io > 0 and (" (" .. list(P.io) .. ")") or ""))
     end
     check(#P.refusedWrites == 0, label .. ": no file write refused by the game" .. (#P.refusedWrites > 0 and (" (" .. list(P.refusedWrites) .. ")") or ""))
 end

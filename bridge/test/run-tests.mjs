@@ -10,7 +10,7 @@
 // tokens from "hookTokens" only, http secrets from "httpTargets", CLI url / new-token.
 // Server mode (--server, "mode": "server"): the streamers and their tokens drawn by the bridge
 // (streamer_add / streamer_token / streamer_remove of the outbox), the token of a call naming
-// the target of its job, game events for their streamer, old events skipped.
+// the target of its job, game events for their streamer.
 // TALKY_TEST_TMP=<dir> chooses where the temporary folders go (default: os.tmpdir()). The
 // tests never touch the clipboard (TALKY_NO_CLIPBOARD).
 
@@ -2069,14 +2069,14 @@ try {
     assert.ok(readJobs(srvLua).length >= before);
   });
 
-  await t('server mode: game events written while the bridge was stopped and too old are skipped, the streamer requests are not', async () => {
+  await t('server mode: a game event and a streamer request are handled whatever their age (no filter on "ts")', async () => {
     const old = Date.now() - 3 * 3600 * 1000;
     fs.appendFileSync(srvOutbox, `${JSON.stringify({ event: 'zombie_killed', data: { name: 'Ancient', streamer: 'Alice' }, ts: old })}\n`
       + `${JSON.stringify({ event: 'streamer_add', data: { name: 'Carol', by: 'Boss' }, ts: old })}\n`);
     await waitFor(() => srvMirror().streamers.some((s) => s.name === 'Carol'), 3000, 'Carol added');
-    await sleep(600);
-    assert.equal(readJobs(srvLua).filter((j) => j.steps.some((s) => String(s.text).includes('Ancient'))).length, 0);
-    assert.match(srvBridge.out, /game event\(s\) older than 10 minutes skipped/);
+    const job = await waitFor(() => readJobs(srvLua).find((j) => j.steps.some((s) => String(s.text).includes('Ancient'))), 3000, 'job of the old event');
+    assert.equal(job.target, 'Alice');
+    assert.doesNotMatch(srvBridge.out, /older than/);
   });
 } finally {
   await stopBridge(srvBridge);

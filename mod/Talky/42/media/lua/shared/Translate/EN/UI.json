@@ -224,8 +224,10 @@
     "UI_Talky_Cat_helicopter": "helicopter",
     "UI_Talky_Cat_sounds": "noise and sounds",
 
-    "UI_Talky_Settings_ServerNote": "Multiplayer: the limits below come from the server (Sandbox Options > Talky).",
+    "UI_Talky_Settings_ServerNote": "Multiplayer: limits from the server (Sandbox Options > Talky), display set by an admin in F8.",
     "UI_Talky_Settings_ServerValue": "%1 (set by the server)",
+    "UI_Talky_Value_On": "on",
+    "UI_Talky_Value_Off": "off",
 
     "UI_Talky_Server_Ready": "Multiplayer: Talky %1 runs on the server.",
     "UI_Talky_Server_YouStreamer": "You are a streamer of this server: the events of your live happen around your character.",
@@ -271,7 +273,6 @@
     "UI_Talky_Ack_unknown": "not a streamer",
     "UI_Talky_Ack_error": "the server could not write the request",
     "UI_Talky_Toast_SavedServer": "Talky: configuration saved on the server",
-    "UI_Talky_Toast_SavedLocal": "Talky: display settings saved",
     "UI_Talky_Toast_SaveFailed": "Talky: not saved (%1)",
     "UI_Talky_Save_too_large": "too large to be sent",
     "UI_Talky_Save_error": "the server could not write the file",
@@ -282,7 +283,7 @@
     "UI_Talky_Test_invalid": "no workflow",
     "UI_Talky_Status_ForStreamer": "for %1",
     "UI_Talky_Events_IntroServer": "When something happens on the server, run a workflow, for the streamer the event is about.",
-    "UI_Talky_Settings_FileServer": "Display settings: Zomboid/Lua/%1 of this PC. Workflows: talky_config.json of the server.",
+    "UI_Talky_Settings_FileServer": "Display settings and workflows: talky_config.json of the server, saved by an admin.",
     "UI_Talky_Reason_not_streamer": "not a streamer of this server",
     "UI_Talky_Server_BridgeOfflineHelp": "Start it on the machine of the server: start-bridge.sh (Linux), start-bridge.cmd server (Windows).",
     "UI_Talky_Stream_AddressHttps": "For https: a reverse proxy in front of the bridge, and its https address here."

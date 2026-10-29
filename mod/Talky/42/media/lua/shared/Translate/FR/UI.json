@@ -224,8 +224,10 @@
     "UI_Talky_Cat_helicopter": "hélicoptère",
     "UI_Talky_Cat_sounds": "bruits et sons",
 
-    "UI_Talky_Settings_ServerNote": "Multijoueur : les limites ci-dessous viennent du serveur (Options bac à sable > Talky).",
+    "UI_Talky_Settings_ServerNote": "Multijoueur : limites du serveur (Options bac à sable > Talky), affichage réglé par un admin (F8).",
     "UI_Talky_Settings_ServerValue": "%1 (fixé par le serveur)",
+    "UI_Talky_Value_On": "activé",
+    "UI_Talky_Value_Off": "désactivé",
 
     "UI_Talky_Server_Ready": "Multijoueur : Talky %1 tourne sur le serveur.",
     "UI_Talky_Server_YouStreamer": "Vous êtes streamer ici : les événements de votre live se produisent autour de votre personnage.",
@@ -271,7 +273,6 @@
     "UI_Talky_Ack_unknown": "pas streamer",
     "UI_Talky_Ack_error": "le serveur n'a pas pu écrire la demande",
     "UI_Talky_Toast_SavedServer": "Talky : configuration enregistrée sur le serveur",
-    "UI_Talky_Toast_SavedLocal": "Talky : réglages d'affichage enregistrés",
     "UI_Talky_Toast_SaveFailed": "Talky : non enregistré (%1)",
     "UI_Talky_Save_too_large": "trop gros pour être envoyé",
     "UI_Talky_Save_error": "le serveur n'a pas pu écrire le fichier",
@@ -282,7 +283,7 @@
     "UI_Talky_Test_invalid": "aucun workflow",
     "UI_Talky_Status_ForStreamer": "pour %1",
     "UI_Talky_Events_IntroServer": "Quand quelque chose se passe sur le serveur, lancez un workflow, pour le streamer concerné.",
-    "UI_Talky_Settings_FileServer": "Affichage : Zomboid/Lua/%1 de ce PC. Workflows : talky_config.json du serveur.",
+    "UI_Talky_Settings_FileServer": "Affichage et workflows : talky_config.json du serveur, enregistré par un admin.",
     "UI_Talky_Reason_not_streamer": "pas streamer sur ce serveur",
     "UI_Talky_Server_BridgeOfflineHelp": "Lancez-le sur la machine du serveur : start-bridge.sh (Linux), start-bridge.cmd server (Windows).",
     "UI_Talky_Stream_AddressHttps": "Pour du https : un proxy inverse devant le bridge, et son adresse https ici."

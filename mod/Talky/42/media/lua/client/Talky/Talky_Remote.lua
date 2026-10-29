@@ -1,7 +1,9 @@
 -- Multiplayer: what the F8 window knows from the server, and asks it. The bridge runs next to
 -- the server, so this game never reads its files: the Talky server code answers.
 --   status     every player: the server's Talky version, the limits, the bridge (running or
---              not, its mode), whether this player is a streamer, an admin (CreateHorde role)
+--              not, its mode), whether this player is a streamer, an admin (CreateHorde role),
+--              and the display settings of the server's talky_config.json (names above
+--              zombies, banners), applied here; "display" brings them again when an admin saves
 --   streamers  admins: the streamers, their tokens, the bridge's port and public address
 --   config     admins: the webhooks, workflows, game events and settings of the server's
 --              talky_config.json; saved back with "saveConfig"
@@ -29,6 +31,7 @@ Talky_Remote = {
     lastTest = nil,        -- last "testAck"
     refused = {},          -- [what] = true: the server refused an admin command to this player
     tagsRequested = false,
+    display = {},          -- display settings of the server's configuration (typed, clamped)
     onChange = nil,        -- function(what): an answer arrived (the window draws its page again)
 }
 
@@ -38,6 +41,24 @@ local ASK_MS, ASK_SLOW_MS, GIVE_UP_MS = 3000, 30000, 120000
 
 local function changed(what)
     if R.onChange then pcall(R.onChange, what) end
+end
+
+-- The code's values of the display settings: what a setting missing on the server falls back to.
+local DISPLAY_DEFAULTS = {}
+for _, opt in ipairs(Talky_Config.editable) do
+    if opt.display then DISPLAY_DEFAULTS[opt.key] = Talky_Config[opt.key] end
+end
+
+-- The server's display settings become this game's (they arrive typed and clamped by displayOf).
+function Talky_Remote.applyDisplay(d)
+    if type(d) ~= "table" then d = {} end
+    for _, opt in ipairs(Talky_Config.editable) do
+        if opt.display then
+            local v = d[opt.key]
+            if v == nil then v = DISPLAY_DEFAULTS[opt.key] end
+            Talky_Config[opt.key] = v
+        end
+    end
 end
 
 function Talky_Remote.active()
@@ -179,6 +200,10 @@ function Talky_Remote.onStatus(a)
         },
         recent = recentOf(a.recent),
     }
+    if R.active() then
+        R.display = Talky_Config.displayOf(a.display)
+        R.applyDisplay(R.display)
+    end
     R.statusAt = getTimestampMs()
     if R.state ~= "ready" then TalkyNet.log("the server answers (Talky " .. R.status.version .. ")") end
     R.state = "ready"
@@ -191,6 +216,15 @@ function Talky_Remote.onStatus(a)
     -- an admin now (Allow me, or a role given during the game): load the configuration
     if R.status.admin and not wasAdmin and R.configState ~= "ready" then R.askConfig() end
     changed("status")
+end
+
+-- An admin saved the server's configuration: its display settings, for every player.
+function Talky_Remote.onDisplay(a)
+    -- single player: the display settings are those of the local talky_config.json
+    if not R.active() then return end
+    R.display = Talky_Config.displayOf(a.settings)
+    R.applyDisplay(R.display)
+    changed("display")
 end
 
 function Talky_Remote.onStreamers(a)

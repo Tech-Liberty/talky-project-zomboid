@@ -5,6 +5,8 @@
 --   tag { id, n, c, p } / untag { id } / tags { reset, list } -> names above zombies (multiplayer)
 --   status, streamers, streamerAck, config, configSaved, testAck, refused -> Talky_Remote (the
 --                                                    F8 window in multiplayer)
+--   display { settings }                           -> the display settings of the server's
+--                                                    configuration, saved by an admin
 -- The jobs and their events never pass through a client: the server reads and writes the
 -- bridge's files itself. Server text is never trusted: lengths, colors and numbers are checked
 -- here again.
@@ -126,6 +128,7 @@ Talky_Client.handlers = {
     streamerAck = function(a) Talky_Remote.onStreamerAck(a) end,
     config = function(a) Talky_Remote.onConfig(a) end,
     configSaved = function(a) Talky_Remote.onConfigSaved(a) end,
+    display = function(a) Talky_Remote.onDisplay(a) end,
     testAck = function(a) Talky_Remote.onTestAck(a) end,
     refused = function(a) Talky_Remote.onRefused(a) end,
 }

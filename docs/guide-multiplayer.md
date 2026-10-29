@@ -141,9 +141,9 @@ fichier). Tant que ce n'est pas livré, la phrase du bloc `p3-ports-https` est l
 
 ## p3-streamer-note (encadré « bon à savoir »)
 
-**FR.** Rien à lancer sur votre PC : ni bridge, ni tunnel. Si l'admin vous donne un nouveau jeton, remplacez **Jeton du pont** dans le widget et enregistrez. Les workflows (ce qui se passe pour un follow, un raid...) sont ceux du serveur : c'est l'admin qui les règle.
+**FR.** Rien à lancer sur votre PC : ni bridge, ni tunnel. Si l'admin vous donne un nouveau jeton, remplacez **Jeton du pont** dans le widget et enregistrez. Les workflows (ce qui se passe pour un follow, un raid...) et l'affichage (noms au-dessus des zombies, bandeaux) sont ceux du serveur : c'est l'admin qui les règle, dans F8.
 
-**EN.** Nothing to run on your PC: no bridge, no tunnel. If the admin gives you a new token, replace **Bridge token** in the widget and save. The workflows (what happens for a follow, a raid...) are the server's: the admin sets them.
+**EN.** Nothing to run on your PC: no bridge, no tunnel. If the admin gives you a new token, replace **Bridge token** in the widget and save. The workflows (what happens for a follow, a raid...) and the display (names above zombies, banners) are the server's: the admin sets them, in F8.
 
 ---
 

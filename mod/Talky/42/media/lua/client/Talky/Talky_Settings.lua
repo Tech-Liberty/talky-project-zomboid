@@ -5,8 +5,8 @@
 --                   recent events; no token: every mod can read the file).
 --   multiplayer   : the server's file, next to the bridge. An admin's window loads it from the
 --                   server and saves it there (Talky_Remote); the bridge's state comes from the
---                   server too. This player's display settings (names above zombies, banners)
---                   stay here, in talky_client.json.
+--                   server too, and so do the display settings (names above zombies, banners)
+--                   every player applies. A client writes no file.
 
 require "Talky/Talky_Json"
 require "Talky/Talky_Config"
@@ -17,14 +17,9 @@ require "Talky/Talky_Remote"
 
 Talky_Settings = {
     data = nil,
-    prefs = nil,       -- multiplayer: { settings = { display keys } } of talky_client.json
     status = nil,
     statusReadAt = 0,
 }
-
--- Settings that only change this player's screen (multiplayer: talky_client.json).
-local DISPLAY = { showNameTags = true, nameTagRange = true, toastSeconds = true, toastY = true }
-Talky_Settings.DISPLAY = DISPLAY
 
 local function mp() return TalkyNet.mode() == "client" end
 Talky_Settings.mp = mp
@@ -39,17 +34,8 @@ local function defaults()
     return { publicUrl = "", webhooks = {}, workflows = {}, gameEvents = {}, settings = {} }
 end
 
-local function loadPrefs()
-    local text = readText(Talky_Config.clientFile)
-    local p = text and TalkyJson.tryDecode(text)
-    if type(p) ~= "table" then p = {} end
-    if type(p.settings) ~= "table" then p.settings = {} end
-    Talky_Settings.prefs = p
-end
-
 function Talky_Settings.load()
     if mp() then
-        loadPrefs()
         Talky_Settings.data = Talky_Remote.config
         if Talky_Remote.isAdmin() and Talky_Remote.configState == "none" then Talky_Remote.askConfig() end
         Talky_Settings.apply()
@@ -79,47 +65,34 @@ function Talky_Settings.ready()
 end
 
 -- Values from the file are clamped to the bounds of the window (the file can be edited by hand).
--- Multiplayer: the display settings of talky_client.json only (the caps are the server's).
+-- Multiplayer: the display settings the server sent (the caps are the server's too).
 function Talky_Settings.apply()
-    local s
-    if mp() then
-        s = Talky_Settings.prefs and Talky_Settings.prefs.settings or {}
-    else
-        s = Talky_Settings.data and Talky_Settings.data.settings or {}
-    end
+    if mp() then return Talky_Remote.applyDisplay(Talky_Remote.display) end
+    local s = Talky_Settings.data and Talky_Settings.data.settings or {}
     if type(s) ~= "table" then return end
     for _, opt in ipairs(Talky_Config.editable) do
-        if not mp() or DISPLAY[opt.key] then
-            local v = s[opt.key]
-            if opt.type == "number" then
-                v = TalkyNet.num(v, nil, opt.min or -1000000, opt.max or 1000000)
-            elseif opt.type == "bool" then
-                if type(v) ~= "boolean" then v = nil end
-            elseif opt.type == "text" then
-                v = TalkyNet.str(v, opt.maxLength or 40, nil)
-            elseif opt.type == "choice" then
-                local found = false
-                for _, c in ipairs(opt.choices) do if c[2] == v then found = true end end
-                if not found then v = nil end
-            end
-            if v ~= nil then Talky_Config[opt.key] = v end
+        local v = s[opt.key]
+        if opt.type == "number" then
+            v = TalkyNet.num(v, nil, opt.min or -1000000, opt.max or 1000000)
+        elseif opt.type == "bool" then
+            if type(v) ~= "boolean" then v = nil end
+        elseif opt.type == "text" then
+            v = TalkyNet.str(v, opt.maxLength or 40, nil)
+        elseif opt.type == "choice" then
+            local found = false
+            for _, c in ipairs(opt.choices) do if c[2] == v then found = true end end
+            if not found then v = nil end
         end
+        if v ~= nil then Talky_Config[opt.key] = v end
     end
 end
 
--- Single player: writes talky_config.json. Multiplayer: this player's display settings here,
--- and the configuration to the server (admins). Returns ok, reason.
+-- Single player: writes talky_config.json. Multiplayer: sends the configuration to the server
+-- (admins; the server sends its display settings back to every player). Returns ok, reason.
 function Talky_Settings.save()
     if mp() then
-        local p = Talky_Settings.prefs or { settings = {} }
-        local w = getFileWriter(Talky_Config.clientFile, true, false)
-        if w then
-            w:write(TalkyJson.encode(p, "  "))
-            w:close()
-        end
-        Talky_Settings.apply()
         if Talky_Settings.ready() then return Talky_Remote.saveConfig(Talky_Settings.data) end
-        return w ~= nil, w == nil and "error" or nil
+        return false, "not_admin"
     end
     local w = getFileWriter(Talky_Config.configFile, true, false)
     if not w then return false end
@@ -141,13 +114,9 @@ function Talky_Settings.get()
     return Talky_Settings.data or Talky_Settings.load()
 end
 
--- The table the Settings page edits for one option: the display settings of this player in
--- multiplayer, the bridge's settings otherwise.
+-- The table the Settings page edits: the "settings" of talky_config.json (multiplayer: the
+-- server's copy an admin edits).
 function Talky_Settings.settingsFor(key)
-    if mp() and DISPLAY[key] then
-        Talky_Settings.prefs = Talky_Settings.prefs or { settings = {} }
-        return Talky_Settings.prefs.settings
-    end
     local d = Talky_Settings.get()
     if type(d.settings) ~= "table" then d.settings = {} end
     return d.settings

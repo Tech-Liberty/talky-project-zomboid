@@ -114,6 +114,9 @@ function Talky_Remote.onChange(what)
     elseif what == "config" then
         Talky_Settings.data = Talky_Remote.config
         win.dirty = false
+    elseif what == "display" then
+        -- new display settings: only the read-only Settings page shows them (an admin may be typing)
+        if win.pageId ~= "settings" or Talky_Settings.ready() then return end
     end
     win:showPage(win.pageId)
 end
@@ -201,16 +204,13 @@ function Talky_Window:showPage(id)
     builder(self, self.page)
 end
 
--- Multiplayer: the display settings are saved here at once, the configuration of an admin is
--- sent to the server (the toast comes with its answer, Talky_Remote.onChange).
+-- Multiplayer: the configuration of an admin is sent to the server (the toast comes with its
+-- answer, Talky_Remote.onChange); another player has nothing to save.
 function Talky_Window:onSave()
     local ok, reason = Talky_Settings.save()
     if Talky_Settings.mp() then
-        if Talky_Settings.ready() then
-            if not ok then Talky_Overlay.toast(Talky_T("Toast_SaveFailed", Talky_T("Save_" .. tostring(reason or "error"))), "#ff5555", 4) end
-        elseif ok then
-            self.dirty = false
-            Talky_Overlay.toast(Talky_T("Toast_SavedLocal"), "#8b5cf6", 3)
+        if Talky_Settings.ready() and not ok then
+            Talky_Overlay.toast(Talky_T("Toast_SaveFailed", Talky_T("Save_" .. tostring(reason or "error"))), "#ff5555", 4)
         end
         return
     end
@@ -883,9 +883,14 @@ end
 
 ---------------------------------------------------------------- page: settings
 
--- Multiplayer: the caps come from the server (read only), the display settings are this
--- player's (talky_client.json), the settings of the bridge (language, anonymous name) are the
--- server's configuration, for the admins.
+-- Multiplayer: the caps come from the server (read only); the display settings and the settings
+-- of the bridge (language, anonymous name) are those of the server's configuration, edited by
+-- the admins; the other players see the display settings read only.
+local function shownValue(opt, v)
+    if opt.type == "bool" then return Talky_T(v == true and "Value_On" or "Value_Off") end
+    return v ~= nil and tostring(v) or "?"
+end
+
 function Talky_Window:page_settings(page)
     title(page, Talky_T("Page_settings"))
     local y = ROW + 16
@@ -897,7 +902,7 @@ function Talky_Window:page_settings(page)
         y = y + ROW + 6
     end
     for _, opt in ipairs(Talky_Config.editable) do
-        local shown = not mp or opt.server or Talky_Settings.DISPLAY[opt.key] or editServer
+        local shown = not mp or opt.server or opt.display or editServer
         if shown then
             local s = Talky_Settings.settingsFor(opt.key)
             local value = s[opt.key]
@@ -907,6 +912,12 @@ function Talky_Window:page_settings(page)
                 Talky_UI.label(page, 0, y, label, C.text)
                 local v = serverCaps and serverCaps[opt.server]
                 Talky_UI.label(page, 360, y, Talky_T("Settings_ServerValue", v ~= nil and tostring(v) or "?"), C.muted)
+            elseif mp and not editServer then
+                -- a display setting of the server, for a player who is not an admin
+                Talky_UI.label(page, 0, y, label, C.text)
+                local v = Talky_Remote.display[opt.key]
+                if v == nil then v = Talky_Config[opt.key] end
+                Talky_UI.label(page, 360, y, Talky_T("Settings_ServerValue", shownValue(opt, v)), C.muted)
             elseif opt.type == "bool" then
                 Talky_UI.tick(page, 0, y, page.width, label, value == true, self, function(win, on)
                     s[opt.key] = on
@@ -946,7 +957,7 @@ function Talky_Window:page_settings(page)
     y = y + 10
     Talky_UI.label(page, 0, y, Talky_T("Settings_Shortcut"), C.muted)
     if mp then
-        Talky_UI.label(page, 0, y + ROW, fit(Talky_T("Settings_FileServer", Talky_Config.clientFile), page.width), C.muted)
+        Talky_UI.label(page, 0, y + ROW, fit(Talky_T("Settings_FileServer"), page.width), C.muted)
     else
         Talky_UI.label(page, 0, y + ROW, Talky_T("Settings_File", Talky_Config.configFile), C.muted)
     end
