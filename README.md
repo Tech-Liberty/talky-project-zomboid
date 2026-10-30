@@ -35,7 +35,7 @@ There are two ways to get the mod. Use only one: two mods with the id `Talky` co
 
 **A. Mod from the Steam Workshop**
 
-1. Subscribe to Talky on the Steam Workshop.
+1. Subscribe to [Talky on the Steam Workshop](https://steamcommunity.com/sharedfiles/filedetails/?id=3830066321).
 2. Download `Talky-0.5.0.zip` from the [GitHub releases](https://github.com/Tech-Liberty/talky-project-zomboid/releases) and extract it to a folder you keep, for example `Documents\Talky`.
 3. Leave the `Talky` folder of the zip where it is: the Workshop already provides the mod, and the game does not read that folder outside `Zomboid\mods`.
 
@@ -189,10 +189,10 @@ The mod goes on the server and on every client. A player who joins a server only
 
 ```ini
 Mods=Talky
-WorkshopItems=<Workshop id of Talky>
+WorkshopItems=3830066321
 ```
 
-- `WorkshopItems` takes the number at the end of the address of the Steam Workshop item, once Talky is published there. Players who join are then asked to download it.
+- `WorkshopItems` takes the number at the end of the address of the Steam Workshop item: `3830066321` for Talky. The server downloads the mod when it starts, and the players who join get it.
 - Without the Workshop, leave Talky out of `WorkshopItems` and copy the `Talky` folder of the zip into the `Zomboid\mods` folder of the server and of every player. Every copy must be the same version.
 - Game 42.21 reads `Mods=\Talky` the same way as `Mods=Talky`.
 
@@ -328,13 +328,19 @@ A job that has not started when its time to live ends is dropped, in single play
 
 ### To check in a real game
 
-Version 0.5.0 was tested with a simulated game API (the Lua runs in Kahlua with fake game objects, one Lua state per game process: a single player game, a dedicated server with several clients, a hosted game) and with real bridges started by the tests. Not yet checked in a real game:
+Version 0.5.0 was tested with a simulated game API (the Lua runs in Kahlua with fake game objects, one Lua state per game process: a single player game, a dedicated server with several clients, a hosted game) and with real bridges started by the tests, then in a real game on 2026-10-30, on Build 42.21, with real Twitch events sent by LibertyTalk.
 
-- the server code reading and writing the `Zomboid/Lua` folder of a dedicated server (`getFileReader` / `getFileWriter` on the server), of a server started with `-cachedir`, and of the server of a hosted game;
-- `player_died` read on the server (`isDead`, `getHoursSurvived` and `getZombieKills` of the server's player), and `getServerName()` of `game_started` on a server;
-- the F8 window of an admin on a real server: the configuration loaded and saved, the clipboard with two lines;
-- LibertyTalk calling an `http://<IP>:<port>` address (it needs the LibertyTalk update that accepts it);
-- still to check since 0.4.0: `heal` (on the streamer's game) and `stat` (changed on the server, then sent to the player); names above zombies in multiplayer; the target of the helicopter; the delay of a blizzard or of a time change on a server; the **Allow me (host)** button; `say` through the chat; items on the ground; the vehicle type check; the role and safehouse checks of the server code; the empty default of **Forbidden items**.
+Checked in a real game:
+
+- single player: the bridge and its tunnel, the F8 pages, **Test now**, the banners, the named zombies and the position of the names above heads, zombies going for the player, bits, `player_died`, a real Twitch follow end to end, the helicopter (`testHelicopter()` outside debug mode) and the weather stages;
+- a dedicated server started with `-cachedir`, with Talky from the Steam Workshop on the server and the client: the server code reading and writing the `Zomboid/Lua` folder of the server, the F8 window of an admin (configuration saved, a streamer added, **Copy URL and token**), a chat command sent by LibertyTalk and run by the server around the streamer, and `player_died` read on the server.
+
+Not yet checked in a real game:
+
+- the server of a hosted game and the **Allow me (host)** button;
+- LibertyTalk calling an `http://<IP>:<port>` address (the server test went through an `https://` tunnel address; LibertyTalk accepts both);
+- `getServerName()` of `game_started` on a server;
+- still to check since 0.4.0: `heal` (on the streamer's game) and `stat` (changed on the server, then sent to the player); names above zombies in multiplayer; the target of the helicopter on a server; the delay of a blizzard or of a time change on a server; `say` through the chat; items on the ground; the vehicle type check; the role and safehouse checks of the server code; the empty default of **Forbidden items**.
 
 ## Writing workflows by hand
 
@@ -508,7 +514,7 @@ A target can also sign the body: `"hmacSecret"` and `"hmacHeader": "X-LT-Signatu
 
 - Multiplayer has its own limits: see [Limits in multiplayer](#limits-in-multiplayer) and [To check in a real game](#to-check-in-a-real-game).
 - The address of a quick tunnel changes at each launch: update the widget settings and the F8 public URL.
-- Version 0.5.0 was tested with a simulated game API: the Lua runs in Kahlua (the Lua VM of the game) with fake game objects. Also to check in a real game, since 0.3.0: the position of the names above heads, zombie aggro (`spotted` / `pathToCharacter`), `testHelicopter()` outside debug mode, the weather stage numbers (taken from the B42 debug menu), the custom key binding, and `byPlayer`.
+- Version 0.5.0 was tested in a real game on Build 42.21, in single player and on a dedicated server (see [To check in a real game](#to-check-in-a-real-game)). Still to check since 0.3.0: the custom key binding, and `byPlayer`.
 - The poll mode (below) was not tested against a live LibertyTalk instance, and does not exist in server mode.
 
 ## Troubleshooting

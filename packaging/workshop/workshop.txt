@@ -2,6 +2,13 @@ version=1
 title=Talky - LibertyTalk Live Events
 description=Talky connects your stream to your Project Zomboid game. When LibertyTalk receives a follow, a sub, bits, a raid, a channel point redemption or a Super Chat, it calls the Talky bridge, and the mod plays the matching workflow in the game: a zombie named after the new follower, a horde sized by the raid, the helicopter for 1000 bits, a storm, an item for a donation.
 description=
+description=[h2]Links[/h2]
+description=[list]
+description=[*][url=https://liberty-talk.com/guides/project-zomboid-talky]Setup guide (single player and server)[/url]
+description=[*][url=https://github.com/Tech-Liberty/talky-project-zomboid/releases]Talky bridge (GitHub releases)[/url]
+description=[*][url=https://liberty-talk.com]LibertyTalk[/url]
+description=[/list]
+description=
 description=[h2]What you need[/h2]
 description=[list]
 description=[*]Project Zomboid Build 42.20.1 or later: single player, hosted game or dedicated server
@@ -21,12 +28,19 @@ description=The admin runs the bridge in server mode on the machine of the serve
 description=The server applies its own limits on the Talky page of the sandbox options: zombies per action and per 10 minutes, one switch per category, cooldowns, distance from other players. Admins and moderators manage Talky; in a hosted game the host is not admin at first: press "Allow me (host)" in F8. Fire and the helicopter are off by default on a server.
 description=
 description=[h2]Limits[/h2]
-description=Single player: the address of a quick Cloudflare tunnel changes at each launch: paste the new one in the widget settings on LibertyTalk. Server: the machine of the server must run Node.js and be reachable on the port of the bridge. Update the mod and the bridge together. Version 0.5.0 was tested against a simulated game API (single player, dedicated server, hosted game); please report on GitHub anything that does not work in a real game.
+description=Single player: the address of a quick Cloudflare tunnel changes at each launch: paste the new one in the widget settings on LibertyTalk. Server: the machine of the server must run Node.js and be reachable on the port of the bridge. Update the mod and the bridge together. Version 0.5.0 was tested in a real game on Build 42.21, in single player and on a dedicated server; please report on GitHub anything that does not work.
 description=
 description=----
 description=
 description=[h2]Français[/h2]
 description=Talky relie votre stream à votre partie de Project Zomboid. Quand LibertyTalk reçoit un follow, un abonnement, des bits, un raid, une récompense de points de chaîne ou un Super Chat, il appelle le bridge Talky, et le mod joue le workflow correspondant dans la partie : un zombie au nom du nouveau follower, une horde à la taille du raid, l'hélicoptère pour 1000 bits, une tempête, un objet pour un don.
+description=
+description=[h2]Liens[/h2]
+description=[list]
+description=[*][url=https://liberty-talk.com/fr/guides/project-zomboid-talky]Guide d'installation (solo et serveur)[/url]
+description=[*][url=https://github.com/Tech-Liberty/talky-project-zomboid/releases]Bridge Talky (releases GitHub)[/url]
+description=[*][url=https://liberty-talk.com/fr]LibertyTalk[/url]
+description=[/list]
 description=
 description=[h2]Ce qu'il vous faut[/h2]
 description=[list]
@@ -47,6 +61,6 @@ description=L'admin lance le bridge en mode serveur sur la machine du serveur (s
 description=Le serveur applique ses propres limites sur la page Talky des options bac à sable : zombies par action et par 10 minutes, un interrupteur par catégorie, délais, distance des autres joueurs. Les admins et modérateurs gèrent Talky ; en partie hébergée, l'hôte n'est pas admin au départ : cliquez sur « M'autoriser (hôte) » dans F8. Le feu et l'hélicoptère sont désactivés par défaut sur un serveur.
 description=
 description=[h2]Limites[/h2]
-description=Solo : l'adresse d'un tunnel Cloudflare rapide change à chaque lancement : collez la nouvelle dans les réglages du widget sur LibertyTalk. Serveur : la machine du serveur doit faire tourner Node.js et être joignable sur le port du bridge. Mettez à jour le mod et le bridge ensemble. La version 0.5.0 a été testée sur une API du jeu simulée (solo, serveur dédié, partie hébergée) ; signalez sur GitHub ce qui ne fonctionne pas en partie réelle.
+description=Solo : l'adresse d'un tunnel Cloudflare rapide change à chaque lancement : collez la nouvelle dans les réglages du widget sur LibertyTalk. Serveur : la machine du serveur doit faire tourner Node.js et être joignable sur le port du bridge. Mettez à jour le mod et le bridge ensemble. La version 0.5.0 a été testée en partie réelle sur la Build 42.21, en solo et sur un serveur dédié ; signalez sur GitHub ce qui ne fonctionne pas.
 tags=Build 42;Interface;Multiplayer;Silly/Fun
 visibility=public

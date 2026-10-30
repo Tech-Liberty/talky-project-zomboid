@@ -35,7 +35,7 @@ Le mod s'obtient de deux façons. N'en utilisez qu'une : deux mods avec l'id `Ta
 
 **A. Le mod depuis le Steam Workshop**
 
-1. Abonnez-vous à Talky sur le Steam Workshop.
+1. Abonnez-vous à [Talky sur le Steam Workshop](https://steamcommunity.com/sharedfiles/filedetails/?id=3830066321).
 2. Téléchargez `Talky-0.5.0.zip` dans les [releases GitHub](https://github.com/Tech-Liberty/talky-project-zomboid/releases) et décompressez-le dans un dossier que vous gardez, par exemple `Documents\Talky`.
 3. Laissez le dossier `Talky` du zip où il est : le Workshop fournit déjà le mod, et le jeu ne lit pas ce dossier en dehors de `Zomboid\mods`.
 
@@ -190,10 +190,10 @@ Le mod va sur le serveur et sur chaque client. Un joueur qui rejoint un serveur 
 
 ```ini
 Mods=Talky
-WorkshopItems=<id Workshop de Talky>
+WorkshopItems=3830066321
 ```
 
-- `WorkshopItems` prend le numéro à la fin de l'adresse de l'élément du Steam Workshop, une fois Talky publié. Les joueurs qui rejoignent doivent alors le télécharger.
+- `WorkshopItems` prend le numéro à la fin de l'adresse de l'élément du Steam Workshop : `3830066321` pour Talky. Le serveur télécharge le mod au démarrage, et les joueurs qui rejoignent le reçoivent.
 - Sans le Workshop, laissez Talky hors de `WorkshopItems` et copiez le dossier `Talky` du zip dans le dossier `Zomboid\mods` du serveur et de chaque joueur. Toutes les copies doivent être de la même version.
 - Le jeu 42.21 lit `Mods=\Talky` comme `Mods=Talky`.
 
@@ -329,13 +329,19 @@ Un job qui n'a pas démarré à la fin de sa durée de vie est abandonné, en so
 
 ### À vérifier en partie réelle
 
-La version 0.5.0 a été testée avec une API du jeu simulée (le Lua tourne dans Kahlua avec de faux objets du jeu, un état Lua par processus du jeu : une partie solo, un serveur dédié avec plusieurs clients, une partie hébergée) et avec de vrais bridges lancés par les tests. Pas encore vérifié en partie réelle :
+La version 0.5.0 a été testée avec une API du jeu simulée (le Lua tourne dans Kahlua avec de faux objets du jeu, un état Lua par processus du jeu : une partie solo, un serveur dédié avec plusieurs clients, une partie hébergée) et avec de vrais bridges lancés par les tests, puis en partie réelle le 30/10/2026, sur la Build 42.21, avec de vrais événements Twitch envoyés par LibertyTalk.
 
-- le code du serveur qui lit et écrit le dossier `Zomboid/Lua` d'un serveur dédié (`getFileReader` / `getFileWriter` sur le serveur), d'un serveur lancé avec `-cachedir`, et du serveur d'une partie hébergée ;
-- `player_died` lu sur le serveur (`isDead`, `getHoursSurvived` et `getZombieKills` du joueur côté serveur), et `getServerName()` de `game_started` sur un serveur ;
-- la fenêtre F8 d'un admin sur un vrai serveur : la configuration chargée et enregistrée, le presse-papiers sur deux lignes ;
-- LibertyTalk qui appelle une adresse `http://<IP>:<port>` (il faut la mise à jour de LibertyTalk qui l'accepte) ;
-- toujours à vérifier depuis la 0.4.0 : `heal` (dans le jeu du streamer) et `stat` (modifiée sur le serveur, puis envoyée au joueur) ; les noms au-dessus des zombies en multijoueur ; la cible de l'hélicoptère ; le délai d'un blizzard ou d'un changement d'heure sur un serveur ; le bouton **M'autoriser (hôte)** ; `say` par le chat ; les objets au sol ; la vérification du type de véhicule ; les contrôles de rôle et de refuge du code serveur ; la valeur par défaut vide de **Objets interdits**.
+Vérifié en partie réelle :
+
+- en solo : le bridge et son tunnel, les pages de F8, **Tester maintenant**, les bandeaux, les zombies nommés et la position des noms au-dessus des têtes, l'attaque des zombies, les bits, `player_died`, un vrai follow Twitch de bout en bout, l'hélicoptère (`testHelicopter()` hors mode debug) et les stades de météo ;
+- sur un serveur dédié lancé avec `-cachedir`, avec Talky depuis le Steam Workshop côté serveur et côté client : le code du serveur qui lit et écrit le dossier `Zomboid/Lua` du serveur, la fenêtre F8 d'un admin (configuration enregistrée, ajout d'un streamer, **Copier l'URL et le jeton**), une commande de chat envoyée par LibertyTalk et exécutée par le serveur autour du streamer, et `player_died` lu sur le serveur.
+
+Pas encore vérifié en partie réelle :
+
+- le serveur d'une partie hébergée et le bouton **M'autoriser (hôte)** ;
+- LibertyTalk qui appelle une adresse `http://<IP>:<port>` (le test serveur passait par une adresse `https://` de tunnel ; LibertyTalk accepte les deux) ;
+- `getServerName()` de `game_started` sur un serveur ;
+- toujours à vérifier depuis la 0.4.0 : `heal` (dans le jeu du streamer) et `stat` (modifiée sur le serveur, puis envoyée au joueur) ; les noms au-dessus des zombies en multijoueur ; la cible de l'hélicoptère sur un serveur ; le délai d'un blizzard ou d'un changement d'heure sur un serveur ; `say` par le chat ; les objets au sol ; la vérification du type de véhicule ; les contrôles de rôle et de refuge du code serveur ; la valeur par défaut vide de **Objets interdits**.
 
 ## Écrire des workflows à la main
 
@@ -509,7 +515,7 @@ Une cible peut aussi signer le corps : `"hmacSecret"` et `"hmacHeader": "X-LT-Si
 
 - Le multijoueur a ses propres limites : voir [Limites en multijoueur](#limites-en-multijoueur) et [À vérifier en partie réelle](#à-vérifier-en-partie-réelle).
 - L'adresse d'un tunnel rapide change à chaque lancement : mettez à jour les réglages du widget et l'URL publique de F8.
-- La version 0.5.0 a été testée avec une API du jeu simulée : le Lua tourne dans Kahlua (la machine Lua du jeu) avec de faux objets du jeu. Toujours à vérifier en partie réelle depuis la 0.3.0 : la position des noms au-dessus des têtes, l'aggro des zombies (`spotted` / `pathToCharacter`), `testHelicopter()` hors mode debug, les numéros de stades météo (repris du menu debug B42), le raccourci personnalisé, et `byPlayer`.
+- La version 0.5.0 a été testée en partie réelle sur la Build 42.21, en solo et sur un serveur dédié (voir [À vérifier en partie réelle](#à-vérifier-en-partie-réelle)). Toujours à vérifier depuis la 0.3.0 : le raccourci personnalisé, et `byPlayer`.
 - Le mode polling (plus bas) n'a pas été testé sur une instance LibertyTalk réelle, et n'existe pas en mode serveur.
 
 ## Dépannage

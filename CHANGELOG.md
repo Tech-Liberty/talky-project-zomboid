@@ -42,10 +42,13 @@ Server mode: on a server, the bridge runs on the machine of the server, and the 
 - Bridge: server mode in the bridge and in real bridge processes started with `--server` (streamer requests, routing by token, `/fire` with a streamer, game events with a streamer, old events skipped, first start with `--server`, startup warnings).
 - `& tools\test-lua.ps1` runs the Lua tests from PowerShell.
 
+### Packaging
+- Steam Workshop item `3830066321`. The Workshop preview and the poster of the mod list use the talkie-walkie logo of the LibertyTalk widget.
+- F8 > Workflows: the buttons of the test line are sized to their text ("Tester maintenant" was hidden under "Workflow en JSON" in French).
+
 ### Known limits
 - The machine of the server must be reachable on the port of the bridge (or through a reverse proxy or a tunnel); a rented server without Node.js cannot run it.
-- LibertyTalk must accept an `http://<IP>:<port>` address in the widget (an update of the official widget); until then, give the bridge an `https://` address.
-- Not yet checked in a real game: the server code reading and writing `Zomboid/Lua` of a dedicated server, of a `-cachedir` server and of a hosted game; `player_died` and `getServerName()` on a server; the admin window on a real server. The checks listed for 0.4.0 still apply.
+- Tested in a real game on 2026-10-30 (Build 42.21, real Twitch events through LibertyTalk): single player end to end, helicopter and weather stages included; a dedicated server started with `-cachedir`, with Talky from the Workshop (server code reading and writing `Zomboid/Lua`, admin window, a streamer added, a chat command run by the server, `player_died` on the server). Not yet checked in a real game: a hosted game and **Allow me (host)**, LibertyTalk calling an `http://<IP>:<port>` address (LibertyTalk accepts it), `getServerName()` on a server, and the checks listed for 0.4.0 that the README still lists.
 
 ## 0.4.0 (2026-10-26)
 
