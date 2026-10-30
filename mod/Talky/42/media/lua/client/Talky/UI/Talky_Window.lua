@@ -841,16 +841,22 @@ function Talky_Window:page_workflows(page)
     end, "danger")
     y = y + ROW + 8
 
-    -- test
+    -- test: both buttons sized to their text, the name field takes what is left
+    -- (fixed widths hid "Tester maintenant" under "Workflow en JSON" in French)
+    local tm = getTextManager()
+    local testText, jsonText = Talky_T("Btn_TestNow"), Talky_T("Btn_WorkflowJson")
+    local testW = tm:MeasureStringX(Talky_UI.FONT, testText) + 24
+    local jsonW = tm:MeasureStringX(Talky_UI.FONT, jsonText) + 24
+    local entryW = math.max(80, math.min(160, w - 150 - 10 - testW - 6 - jsonW))
     Talky_UI.label(page, x, y, Talky_T("Wf_TestWith"), C.muted)
-    local testEntry = Talky_UI.entry(page, x + 150, y, 160, self.testUser or Talky_T("Wf_TestUser"), self, function(win, t) win.testUser = t end)
-    Talky_UI.button(page, x + 320, y, 140, Talky_T("Btn_TestNow"), self, function(win)
+    local testEntry = Talky_UI.entry(page, x + 150, y, entryW, self.testUser or Talky_T("Wf_TestUser"), self, function(win, t) win.testUser = t end)
+    Talky_UI.button(page, x + 150 + entryW + 10, y, testW, testText, self, function(win)
         if win.dirty then win:onSave() end -- the bridge runs the saved version
         Talky_Settings.testWorkflow(name, { user = testEntry:getText(), user_name = testEntry:getText(), bits = 500, viewers = 10, tier = "1000" })
         -- multiplayer: the bridge of the server runs it around this admin
         Talky_Overlay.toast(Talky_T(Talky_Settings.mp() and "Toast_TestSentServer" or "Toast_TestSent", name), "#8b5cf6", 3)
     end, "primary")
-    Talky_UI.button(page, x + w - 150, y, 150, Talky_T("Btn_WorkflowJson"), self, function(win)
+    Talky_UI.button(page, x + w - jsonW, y, jsonW, jsonText, self, function(win)
         Talky_JsonEditor.open(Talky_T("Wf_JsonTitle", name), Talky_T("Wf_JsonHelp"), wf, function(v)
             if v then d.workflows[name] = v end
             win:markDirty()
